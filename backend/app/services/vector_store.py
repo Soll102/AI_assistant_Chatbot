@@ -67,11 +67,11 @@ class VectorStore:
                 )
             )
         ranked_sources = sorted(sources, key=lambda source: source.score or 0, reverse=True)
-        top_sources = ranked_sources[:top_k]
+        top_sources = relevant_sources(query, ranked_sources, top_k)
         for source in top_sources:
             nearby_sources = self.sources_near_page(source.document_id, source.page, lookback_pages=12)
             source.preview_page = context_start_page(query, source, [*nearby_sources, *ranked_sources])
-        return top_sources
+        return dedupe_sources(top_sources)
 
     def list_documents(self) -> list[DocumentSummary]:
         results = self.collection.get(include=["metadatas"])
@@ -89,6 +89,14 @@ class VectorStore:
             )
             item["chunks"] += 1
         return [DocumentSummary(**item) for item in grouped.values()]
+
+    def delete_document(self, document_id: str) -> bool:
+        existing = self.collection.get(where={"document_id": document_id}, include=["metadatas"])
+        ids = existing.get("ids", [])
+        if not ids:
+            return False
+        self.collection.delete(where={"document_id": document_id})
+        return True
 
     def new_document_id(self) -> str:
         return uuid4().hex
@@ -195,6 +203,90 @@ def rerank_score(query: str, text: str, distance: float) -> float:
     keyword_score = lexical_score(query, text)
     exact_bonus = exact_match_bonus(query, text)
     return (0.62 * vector_score) + (0.33 * keyword_score) + exact_bonus
+
+
+def relevant_sources(query: str, ranked_sources: list[SourceChunk], top_k: int) -> list[SourceChunk]:
+    if not ranked_sources:
+        return []
+
+    identifier_terms = important_identifier_terms(query)
+    if identifier_terms:
+        exact_sources = sources_matching_identifiers(identifier_terms, ranked_sources)
+        if exact_sources:
+            return exact_sources[:top_k]
+
+    best_score = ranked_sources[0].score or 0.0
+    best_keyword_score = lexical_score(query, ranked_sources[0].text)
+    selected = [ranked_sources[0]]
+
+    for source in ranked_sources[1:]:
+        source_score = source.score or 0.0
+        keyword_score = lexical_score(query, source.text)
+        close_enough = best_score > 0 and source_score >= best_score * 0.88
+        has_keyword_signal = keyword_score >= max(0.16, best_keyword_score * 0.45)
+
+        if close_enough and has_keyword_signal:
+            selected.append(source)
+        if len(selected) >= top_k:
+            break
+
+    return selected
+
+
+def dedupe_sources(sources: list[SourceChunk]) -> list[SourceChunk]:
+    unique_sources: list[SourceChunk] = []
+    seen_locations: set[tuple[str, int]] = set()
+
+    for source in sources:
+        location = (source.document_id, source.preview_page or source.page)
+        if location in seen_locations:
+            continue
+        if any(text_similarity(source.text, kept.text) >= 0.72 for kept in unique_sources):
+            continue
+        unique_sources.append(source)
+        seen_locations.add(location)
+
+    return unique_sources
+
+
+def text_similarity(left: str, right: str) -> float:
+    left_terms = set(tokenize(left))
+    right_terms = set(tokenize(right))
+    if not left_terms or not right_terms:
+        return 0.0
+    return len(left_terms & right_terms) / len(left_terms | right_terms)
+
+
+def important_identifier_terms(query: str) -> set[str]:
+    return {
+        token
+        for token in tokenize(query)
+        if any(char.isdigit() for char in token) and len(token) >= 2
+    }
+
+
+def sources_matching_identifiers(identifier_terms: set[str], ranked_sources: list[SourceChunk]) -> list[SourceChunk]:
+    selected: list[SourceChunk] = []
+    seen_keys: set[tuple[str, int, str]] = set()
+
+    for term in sorted(identifier_terms, key=len, reverse=True):
+        matches = [source for source in ranked_sources if contains_identifier(source.text, term)]
+        for source in matches[:1]:
+            key = (source.document_id, source.page, source.text)
+            if key not in seen_keys:
+                selected.append(source)
+                seen_keys.add(key)
+
+    return sorted(selected, key=lambda source: source.score or 0, reverse=True)
+
+
+def contains_identifier(text: str, identifier: str) -> bool:
+    if len(identifier) <= 2 and identifier.isdigit():
+        # Short numeric IDs are common in table columns, so require a row-like ID position.
+        pattern = rf"(?m)(^|\n|\|)\s*{re.escape(identifier)}\s+"
+        return re.search(pattern, text) is not None
+
+    return identifier in tokenize(text)
 
 
 def context_start_page(query: str, source: SourceChunk, candidates: list[SourceChunk]) -> int:

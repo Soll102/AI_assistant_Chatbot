@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DocumentSummary(BaseModel):
@@ -18,7 +18,7 @@ class SourceChunk(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    question: str
+    question: str = Field(..., max_length=500)
     document_id: str | None = None
     session_id: str | None = None
 
@@ -27,6 +27,8 @@ class ChatResponse(BaseModel):
     session_id: str
     answer: str
     sources: list[SourceChunk]
+    tool_name: str | None = None
+    verification: str | None = None
 
 
 class ChatSession(BaseModel):

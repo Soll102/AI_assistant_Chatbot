@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Bot, ChevronLeft, FileText, Loader2, MessageSquarePlus, Send, Trash2, Upload } from "lucide-react";
+import katex from "katex";
 import { marked } from "marked";
+import "katex/dist/katex.min.css";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+const MAX_QUESTION_LENGTH = 500;
 const WELCOME_MESSAGE = {
   role: "assistant",
   content: "",
@@ -24,6 +27,7 @@ function App() {
   const [isPreviewHidden, setIsPreviewHidden] = useState(false);
   const [isPreviewGuardActive, setIsPreviewGuardActive] = useState(true);
   const [historyMenu, setHistoryMenu] = useState(null);
+  const [documentMenu, setDocumentMenu] = useState(null);
   const [previewMenu, setPreviewMenu] = useState(null);
   const [panelSizes, setPanelSizes] = useState(() => {
     const saved = localStorage.getItem("rag-panel-sizes");
@@ -52,6 +56,7 @@ function App() {
   useEffect(() => {
     function closeContextMenus() {
       setHistoryMenu(null);
+      setDocumentMenu(null);
       setPreviewMenu(null);
     }
     window.addEventListener("click", closeContextMenus);
@@ -119,6 +124,22 @@ function App() {
       setActiveSessionId("");
       setMessages([WELCOME_MESSAGE]);
     }
+  }
+
+  async function deleteDocument(documentId) {
+    setDocumentMenu(null);
+    const response = await fetch(`${API_BASE}/api/documents/${documentId}`, { method: "DELETE" });
+    if (!response.ok) return;
+
+    setDocuments((current) => {
+      const nextDocuments = current.filter((document) => document.id !== documentId);
+      if (activeDocumentId === documentId) {
+        setActiveDocumentId(nextDocuments[0]?.id || "");
+        setPreviewPage(1);
+        setMessages([WELCOME_MESSAGE]);
+      }
+      return nextDocuments;
+    });
   }
 
   function startResize(handle) {
@@ -223,7 +244,13 @@ function App() {
       }
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: data.answer, sources: data.sources || [] },
+        {
+          role: "assistant",
+          content: data.answer,
+          sources: data.sources || [],
+          toolName: data.tool_name,
+          verification: data.verification,
+        },
       ]);
       await loadSessions();
     } catch (error) {
@@ -265,22 +292,41 @@ function App() {
             <p className="muted">Chưa có PDF nào.</p>
           ) : (
             documents.map((document) => (
-              <button
-                className={`document-item ${document.id === activeDocumentId ? "active" : ""}`}
-                key={document.id}
-                onClick={() => {
-                  setActiveDocumentId(document.id);
-                  setPreviewPage(1);
-                }}
-              >
-                <FileText size={18} />
-                <span>
-                  <strong>{document.filename}</strong>
-                  <small>
-                    {document.pages} trang · {document.chunks} chunks
-                  </small>
-                </span>
-              </button>
+              <div className="document-row" key={document.id}>
+                <button
+                  className={`document-item ${document.id === activeDocumentId ? "active" : ""}`}
+                  onClick={() => {
+                    setActiveDocumentId(document.id);
+                    setPreviewPage(1);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setDocumentMenu({ documentId: document.id });
+                  }}
+                >
+                  <FileText size={18} />
+                  <span>
+                    <strong>{document.filename}</strong>
+                    <small>
+                      {document.pages} trang · {document.chunks} chunks
+                    </small>
+                  </span>
+                </button>
+                {documentMenu?.documentId === document.id && (
+                  <button
+                    className="document-delete"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      deleteDocument(document.id);
+                    }}
+                    title="Xoá PDF"
+                  >
+                    <Trash2 size={14} />
+                    Xoá
+                  </button>
+                )}
+              </div>
             ))
           )}
         </section>
@@ -343,6 +389,12 @@ function App() {
                 className="message-body"
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
               />
+              {(message.toolName || message.verification) && (
+                <div className="message-meta">
+                  {message.toolName && <span>Tool: {message.toolName}</span>}
+                  {message.verification && <span>Verification: {message.verification}</span>}
+                </div>
+              )}
               {message.sources?.length > 0 && (
                 <SourceList
                   sources={message.sources}
@@ -367,7 +419,7 @@ function App() {
         <form className="composer" onSubmit={askQuestion}>
           <textarea
             value={question}
-            onChange={(event) => setQuestion(event.target.value)}
+            onChange={(event) => setQuestion(event.target.value.slice(0, MAX_QUESTION_LENGTH))}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -375,8 +427,12 @@ function App() {
               }
             }}
             placeholder={activeDocument ? "Hỏi về PDF này..." : "Upload hoặc chọn PDF trước..."}
+            maxLength={MAX_QUESTION_LENGTH}
             rows={1}
           />
+          <span className={`char-counter ${question.length >= MAX_QUESTION_LENGTH ? "limit" : ""}`}>
+            {question.length}/{MAX_QUESTION_LENGTH}
+          </span>
           <button type="submit" disabled={!question.trim() || isAsking}>
             <Send size={18} />
           </button>
@@ -459,19 +515,44 @@ function renderMarkdown(content) {
 }
 
 function formatMath(content) {
+  const renderedMath = [];
+  const stashMath = (html) => {
+    const token = `@@MATH_${renderedMath.length}@@`;
+    renderedMath.push(html);
+    return token;
+  };
+
   return content
     .replace(/\$\$([\s\S]+?)\$\$/g, (_, expression) => {
-      return `<div class="math-block">${escapeHtml(expression.trim())}</div>`;
+      return stashMath(renderMath(expression, true));
     })
     .replace(/\\\[([\s\S]+?)\\\]/g, (_, expression) => {
-      return `<div class="math-block">${escapeHtml(expression.trim())}</div>`;
+      return stashMath(renderMath(expression, true));
     })
     .replace(/(^|[^$])\$([^$\n]{1,160})\$(?!\$)/g, (_, prefix, expression) => {
-      return `${prefix}<span class="math-inline">${escapeHtml(expression.trim())}</span>`;
+      return `${prefix}${stashMath(renderMath(expression, false))}`;
     })
     .replace(/\\\(([^)\n]{1,160})\\\)/g, (_, expression) => {
-      return `<span class="math-inline">${escapeHtml(expression.trim())}</span>`;
+      return stashMath(renderMath(expression, false));
+    })
+    .replace(/(^|\n)([^\n]*\\(?:sum|substack|frac|sqrt|neq|leq|geq|log|alpha|beta|theta|hat|bar)[^\n]*)/g, (_, prefix, expression) => {
+      return `${prefix}${stashMath(renderMath(expression.trim(), true))}`;
+    })
+    .replace(/@@MATH_(\d+)@@/g, (_, index) => renderedMath[Number(index)] || "");
+}
+
+function renderMath(expression, displayMode) {
+  const normalized = expression.trim();
+  try {
+    return katex.renderToString(normalized, {
+      displayMode,
+      throwOnError: false,
+      strict: "ignore",
     });
+  } catch {
+    const className = displayMode ? "math-block" : "math-inline";
+    return `<span class="${className}">${escapeHtml(normalized)}</span>`;
+  }
 }
 
 function escapeHtml(value) {

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1100, ge=300, le=3000)
     chunk_overlap: int = Field(default=180, ge=0, le=800)
     top_k: int = Field(default=6, ge=1, le=20)
+    enable_answer_verification: bool = True
 
     base_dir: Path = Path(__file__).resolve().parents[1]
     storage_dir: Path = base_dir / "storage"

@@ -1,9 +1,11 @@
 from collections.abc import Iterable
 import base64
+import json
 
 import httpx
 
 from app.schemas import SourceChunk
+from app.services.rag_tools import ToolPlan, fallback_tool_plan
 
 
 class GeminiClient:
@@ -21,6 +23,44 @@ class GeminiClient:
 
         prompt = build_prompt(question, sources)
         return self._generate_text([{"text": prompt}])
+
+    def plan_tool_call(self, question: str, has_document: bool) -> ToolPlan:
+        if not self.api_key or not has_document:
+            return fallback_tool_plan(question)
+
+        prompt = build_tool_planning_prompt(question)
+        raw_text = self._generate_text([{"text": prompt}])
+        try:
+            payload = parse_json_object(raw_text)
+        except ValueError:
+            return fallback_tool_plan(question)
+
+        name = str(payload.get("tool") or "search_pdf")
+        query = str(payload.get("query") or question).strip() or question
+        reason = str(payload.get("reason") or "")
+        if name not in {"search_pdf", "summarize_pdf"}:
+            return fallback_tool_plan(question)
+        return ToolPlan(name=name, query=query, reason=reason)
+
+    def verify_answer(self, question: str, answer: str, sources: list[SourceChunk]) -> tuple[str, str]:
+        if not self.api_key or not sources or is_api_error(answer):
+            return answer, "skipped"
+
+        prompt = build_verification_prompt(question, answer, sources)
+        raw_text = self._generate_text([{"text": prompt}])
+        try:
+            payload = parse_json_object(raw_text)
+        except ValueError:
+            return answer, "unverified"
+
+        is_supported = bool(payload.get("is_supported"))
+        fixed_answer = str(payload.get("fixed_answer") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if is_supported:
+            return answer, f"supported: {reason}" if reason else "supported"
+        if fixed_answer:
+            return fixed_answer, f"revised: {reason}" if reason else "revised"
+        return "Tài liệu không cung cấp đủ thông tin để trả lời chắc chắn.", "unsupported"
 
     def extract_page_from_image(self, image_bytes: bytes, page_number: int) -> str:
         if not self.api_key:
@@ -108,3 +148,67 @@ CÂU HỎI:
 
 TRẢ LỜI:
 """.strip()
+
+
+def build_tool_planning_prompt(question: str) -> str:
+    return f"""
+Bạn là bộ điều phối tool cho một PDF RAG chatbot.
+Chọn đúng 1 tool và trả về JSON thuần, không markdown.
+
+TOOLS:
+- search_pdf: dùng cho câu hỏi cụ thể cần tìm thông tin trong PDF.
+- summarize_pdf: dùng khi người dùng muốn tóm tắt, overview, ý chính, kết luận.
+
+JSON schema:
+{{"tool":"search_pdf|summarize_pdf","query":"câu truy vấn tối ưu để retrieval","reason":"lý do ngắn"}}
+
+Câu hỏi:
+{question}
+""".strip()
+
+
+def build_verification_prompt(question: str, answer: str, sources: Iterable[SourceChunk]) -> str:
+    context = "\n\n".join(
+        f"[Đoạn {index}]\n{source.text}"
+        for index, source in enumerate(sources, start=1)
+    )
+    return f"""
+Bạn là bộ kiểm chứng câu trả lời cho PDF RAG.
+Kiểm tra ANSWER có được hỗ trợ bởi CONTEXT hay không.
+Trả về JSON thuần, không markdown.
+
+Quy tắc:
+- is_supported=true nếu câu trả lời bám sát context.
+- is_supported=false nếu câu trả lời bịa, suy đoán, hoặc context không đủ.
+- Nếu false, fixed_answer phải là câu trả lời ngắn gọn chỉ dựa trên context.
+- Nếu context không đủ, fixed_answer nói rằng tài liệu không cung cấp đủ thông tin.
+
+JSON schema:
+{{"is_supported":true|false,"reason":"lý do ngắn","fixed_answer":"câu trả lời đã sửa nếu cần"}}
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+ANSWER:
+{answer}
+""".strip()
+
+
+def parse_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found")
+    return json.loads(cleaned[start : end + 1])
+
+
+def is_api_error(answer: str) -> bool:
+    return answer.startswith("Gemini API lỗi") or answer.startswith("Không gọi được Gemini API")

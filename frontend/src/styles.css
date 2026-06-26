@@ -130,6 +130,7 @@ body {
   padding-top: 8px;
 }
 
+.document-row,
 .history-row {
   position: relative;
 }
@@ -169,6 +170,7 @@ body {
   font-size: 11px;
 }
 
+.document-delete,
 .history-delete {
   position: absolute;
   top: 8px;
@@ -188,6 +190,7 @@ body {
   font-weight: 700;
 }
 
+.document-delete:hover,
 .history-delete:hover {
   background: #fee2e2;
 }
@@ -379,6 +382,9 @@ body.resizing iframe {
 }
 
 .message.user .message-body {
+  width: fit-content;
+  max-width: min(680px, 75vw);
+  margin-left: auto;
   color: #ffffff;
   background: #2563eb;
 }
@@ -389,6 +395,22 @@ body.resizing iframe {
 
 .message-body p:last-child {
   margin-bottom: 0;
+}
+
+.message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 5px 2px 0;
+  color: #667085;
+  font-size: 11px;
+}
+
+.message-meta span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
 }
 
 .math-inline {
@@ -484,6 +506,7 @@ body.resizing iframe {
 .composer {
   display: grid;
   grid-template-columns: 1fr 42px;
+  grid-template-rows: auto auto;
   gap: 10px;
   padding: 10px 16px 12px;
   border-top: 1px solid #e2e8f0;
@@ -507,7 +530,22 @@ body.resizing iframe {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
+.char-counter {
+  align-self: start;
+  justify-self: end;
+  margin-top: -7px;
+  color: #667085;
+  font-size: 11px;
+}
+
+.char-counter.limit {
+  color: #b42318;
+  font-weight: 700;
+}
+
 .composer button {
+  grid-column: 2;
+  grid-row: 1;
   width: 42px;
   height: 42px;
   color: #ffffff;

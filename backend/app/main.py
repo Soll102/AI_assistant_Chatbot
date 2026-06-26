@@ -10,6 +10,7 @@ from app.schemas import ChatMessage, ChatRequest, ChatResponse, ChatSession, Cre
 from app.services.chat_history import ChatHistoryStore
 from app.services.gemini_client import GeminiClient
 from app.services.pdf_processor import PageText, chunk_pages, extract_pdf_pages, render_page_png
+from app.services.rag_tools import RagToolRunner
 from app.services.vector_store import VectorStore
 
 app = FastAPI(title="Multimodal RAG Chatbot")
@@ -145,6 +146,22 @@ def get_document_file(document_id: str, config: Settings = Depends(get_settings)
     )
 
 
+@app.delete("/api/documents/{document_id}", status_code=204)
+def delete_document(
+    document_id: str,
+    config: Settings = Depends(get_settings),
+    store: VectorStore = Depends(vector_store),
+) -> None:
+    deleted_vectors = store.delete_document(document_id)
+    pdf_path = config.uploads_dir / f"{document_id}.pdf"
+    deleted_file = False
+    if pdf_path.exists():
+        pdf_path.unlink()
+        deleted_file = True
+    if not deleted_vectors and not deleted_file:
+        raise HTTPException(status_code=404, detail="Không tìm thấy PDF.")
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(
     request: ChatRequest,
@@ -165,15 +182,33 @@ def chat(
     history.add_message(session.id, "user", question)
     history.update_title_from_question(session.id, question)
 
-    sources = store.search(question, top_k=config.top_k, document_id=request.document_id)
+    tool_plan = gemini.plan_tool_call(question, has_document=bool(request.document_id))
+    tool_result = RagToolRunner(store).run(tool_plan, top_k=config.top_k, document_id=request.document_id)
+    sources = tool_result.sources
     if not sources:
         answer = "Chưa tìm thấy nội dung liên quan trong tài liệu."
         history.add_message(session.id, "assistant", answer)
-        return ChatResponse(session_id=session.id, answer=answer, sources=[])
+        return ChatResponse(
+            session_id=session.id,
+            answer=answer,
+            sources=[],
+            tool_name=tool_result.name,
+            verification="skipped",
+        )
 
+    sources = enrich_formula_sources(question, sources, config, gemini)
     answer = gemini.answer(question, sources)
+    verification = "disabled"
+    if config.enable_answer_verification:
+        answer, verification = gemini.verify_answer(question, answer, sources)
     history.add_message(session.id, "assistant", answer)
-    return ChatResponse(session_id=session.id, answer=answer, sources=sources)
+    return ChatResponse(
+        session_id=session.id,
+        answer=answer,
+        sources=sources,
+        tool_name=tool_result.name,
+        verification=verification,
+    )
 
 
 def enrich_low_text_pages_with_vision(
@@ -194,3 +229,47 @@ def enrich_low_text_pages_with_vision(
         enriched.append(PageText(page=page.page, text=combined))
 
     return enriched
+
+
+def enrich_formula_sources(
+    question: str,
+    sources: list,
+    config: Settings,
+    gemini: GeminiClient,
+) -> list:
+    if not should_read_formula_from_page_image(question) or not gemini.api_key:
+        return sources
+
+    enriched_sources = list(sources)
+    source = enriched_sources[0]
+    pdf_path = config.uploads_dir / f"{source.document_id}.pdf"
+    if not pdf_path.exists():
+        return sources
+
+    page_number = source.preview_page or source.page
+    image_bytes = render_page_png(pdf_path, page_number)
+    visual_text = gemini.extract_page_from_image(image_bytes, page_number).strip()
+    if visual_text and not visual_text.startswith(("Gemini API lỗi", "Không gọi được Gemini API")):
+        source.text = (
+            f"{source.text}\n\n"
+            f"[Nội dung đọc thêm từ ảnh trang {page_number}, dùng cho công thức/hình ảnh]\n"
+            f"{visual_text}"
+        )
+
+    return enriched_sources
+
+
+def should_read_formula_from_page_image(question: str) -> bool:
+    lowered = question.lower()
+    formula_terms = [
+        "công thức",
+        "cong thuc",
+        "formula",
+        "equation",
+        "phương trình",
+        "phuong trinh",
+        "ký hiệu",
+        "ki hieu",
+        "latex",
+    ]
+    return any(term in lowered for term in formula_terms)
