@@ -2,17 +2,16 @@ services:
   - type: web
     name: ai-assistant-chatbot
     runtime: python
+    pythonVersion: "3.12.0"
     repo: https://github.com/Soll102/AI_assistant_Chatbot
     branch: master
     buildCommand: pip install -r backend/requirements.txt
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12"
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-2.5-flash-lite
+        value: gemini-3.1-flash-lite
       - key: BACKEND_CORS_ORIGINS
         value: https://soll102.github.io
       - key: ENABLE_GEMINI_VISION_FALLBACK
