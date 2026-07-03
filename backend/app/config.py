@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict # type: ignore
 
 class Settings(BaseSettings):
     app_name: str = "Multimodal RAG Chatbot"
-    backend_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    backend_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,https://soll102.github.io"
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash-lite"
