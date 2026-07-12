@@ -201,6 +201,10 @@ body {
   border-color: #b9ccff;
 }
 
+.document-item svg {
+  flex-shrink: 0;
+}
+
 .document-item strong {
   overflow: hidden;
   text-overflow: ellipsis;
