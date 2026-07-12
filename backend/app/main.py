@@ -1,9 +1,9 @@
 from pathlib import Path
 from shutil import copyfileobj
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Request
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 
 from app.config import Settings, get_settings
 from app.schemas import ChatMessage, ChatRequest, ChatResponse, ChatSession, CreateSessionRequest, DocumentSummary
@@ -22,6 +22,11 @@ def startup() -> None:
     app.state.vector_store = VectorStore(settings.chroma_dir, settings.embedding_model)
     app.state.gemini = GeminiClient(settings.gemini_api_key, settings.gemini_model)
     app.state.chat_history = ChatHistoryStore(settings.chat_db_path)
+
+
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    return await call_next(request)
 
 
 settings = get_settings()
@@ -98,7 +103,7 @@ def upload_document(
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file PDF.")
 
     document_id = store.new_document_id()
-    safe_name = Path(file.filename).name[:80]
+    safe_name = Path(file.filename).name
     pdf_path = config.uploads_dir / f"{document_id}.pdf"
 
     with pdf_path.open("wb") as output:
@@ -127,70 +132,18 @@ def upload_document(
 
 
 @app.get("/api/documents/{document_id}/file")
-def get_document_file(request: Request, document_id: str, config: Settings = Depends(get_settings)) -> Response:
+def get_document_file(document_id: str, config: Settings = Depends(get_settings)) -> FileResponse:
     pdf_path = config.uploads_dir / f"{document_id}.pdf"
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="Không tìm thấy PDF.")
-    
-    file_size = pdf_path.stat().st_size
-    range_header = request.headers.get("range")
-    
-    # Optimized: HTTP Range Request support
-    if range_header:
-        try:
-            range_value = range_header.strip().lower()
-            if range_value.startswith("bytes="):
-                range_value = range_value[6:]
-            
-            parts = range_value.split("-")
-            start = int(parts[0]) if parts[0] else 0
-            end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-            
-            if start >= file_size or end >= file_size:
-                raise ValueError("Range out of bounds")
-            
-            content_length = end - start + 1
-            
-            with open(pdf_path, "rb") as f:
-                f.seek(start)
-                data = f.read(content_length)
-            
-            return Response(
-                content=data,
-                status_code=206,
-                media_type="application/pdf",
-                headers={
-                    "Content-Range": f"bytes {start}-{end}/{file_size}",
-                    "Content-Length": str(content_length),
-                    "Accept-Ranges": "bytes",
-                    "Content-Disposition": f'inline; filename="{document_id}.pdf"',
-                    "Cache-Control": "public, max-age=86400",
-                    "ETag": f'"{document_id}-{file_size}"',
-                },
-            )
-        except (ValueError, IndexError, OSError):
-            pass
-    
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
         headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-            "Cache-Control": "public, max-age=86400",
-            "ETag": f'"{document_id}-{file_size}"',
+            "Content-Disposition": f'inline; filename="{document_id}.pdf"',
+            "X-Content-Type-Options": "nosniff",
         },
     )
-
-
-@app.get("/api/documents/{document_id}/page-count")
-def get_page_count(document_id: str, store: VectorStore = Depends(vector_store)):
-    """Fast endpoint to get just the page count from metadata."""
-    docs = store.list_documents()
-    doc = next((d for d in docs if d.id == document_id), None)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Không tìm thấy PDF.")
-    return {"pdf_id": document_id, "num_pages": doc.pages}
 
 
 @app.delete("/api/documents/{document_id}", status_code=204)
@@ -224,14 +177,13 @@ def chat(
     session = history.get_or_create_session(
         session_id=request.session_id,
         title=question,
-        document_id=None,
+        document_id=request.document_id,
     )
     history.add_message(session.id, "user", question)
     history.update_title_from_question(session.id, question)
 
-    has_any_document = bool(store.list_documents())
-    tool_plan = gemini.plan_tool_call(question, has_document=has_any_document)
-    tool_result = RagToolRunner(store).run(tool_plan, top_k=config.top_k, document_id=None)
+    tool_plan = gemini.plan_tool_call(question, has_document=bool(request.document_id))
+    tool_result = RagToolRunner(store).run(tool_plan, top_k=config.top_k, document_id=request.document_id)
     sources = tool_result.sources
     if not sources:
         answer = "Chưa tìm thấy nội dung liên quan trong tài liệu."
@@ -249,10 +201,6 @@ def chat(
     verification = "disabled"
     if config.enable_answer_verification:
         answer, verification = gemini.verify_answer(question, answer, sources)
-
-    if is_no_info_answer(answer):
-        sources = []
-
     history.add_message(session.id, "assistant", answer)
     return ChatResponse(
         session_id=session.id,
@@ -277,7 +225,7 @@ def enrich_low_text_pages_with_vision(
 
         image_bytes = render_page_png(pdf_path, page.page)
         vision_text = gemini.extract_page_from_image(image_bytes, page.page).strip()
-        combined = "\\n\\n".join(part for part in [page.text.strip(), vision_text] if part)
+        combined = "\n\n".join(part for part in [page.text.strip(), vision_text] if part)
         enriched.append(PageText(page=page.page, text=combined))
 
     return enriched
@@ -303,8 +251,8 @@ def enrich_formula_sources(
     visual_text = gemini.extract_page_from_image(image_bytes, page_number).strip()
     if visual_text and not visual_text.startswith(("Gemini API lỗi", "Không gọi được Gemini API")):
         source.text = (
-            f"{source.text}\\n\\n"
-            f"[Nội dung đọc thêm từ ảnh trang {page_number}, dùng cho công thức/hình ảnh]\\n"
+            f"{source.text}\n\n"
+            f"[Nội dung đọc thêm từ ảnh trang {page_number}, dùng cho công thức/hình ảnh]\n"
             f"{visual_text}"
         )
 
@@ -325,27 +273,3 @@ def should_read_formula_from_page_image(question: str) -> bool:
         "latex",
     ]
     return any(term in lowered for term in formula_terms)
-
-
-_NO_INFO_PATTERNS = [
-    "không cung cấp đủ thông tin",
-    "không có thông tin",
-    "không tìm thấy thông tin",
-    "không đề cập",
-    "không nhắc đến",
-    "không có dữ liệu",
-    "không đủ dữ liệu",
-    "không đủ thông tin",
-    "tài liệu không",
-    "không được đề cập",
-    "không được nhắc đến",
-    "do not provide",
-    "no information",
-    "not found in",
-    "not mentioned",
-]
-
-
-def is_no_info_answer(answer: str) -> bool:
-    lowered = answer.lower()
-    return any(pattern in lowered for pattern in _NO_INFO_PATTERNS)

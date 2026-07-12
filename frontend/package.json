@@ -13,14 +13,8 @@
     "katex": "^0.17.0",
     "lucide-react": "latest",
     "marked": "latest",
-    "pdfjs-dist": "^6.1.200",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"
-  },
-  "devDependencies": {
-    "autoprefixer": "^10.5.2",
-    "postcss": "^8.5.16",
-    "tailwindcss": "^3.4.19"
   }
 }

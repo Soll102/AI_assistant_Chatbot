@@ -1,7 +1,3 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 :root {
   color: #172033;
   background: #eef1f5;
@@ -57,7 +53,8 @@ body {
   gap: 10px;
 }
 
-.brand div {
+.brand div,
+.document-item span {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -76,6 +73,7 @@ body {
 
 .primary-button,
 .ghost-button,
+.document-item,
 .composer button {
   display: inline-flex;
   align-items: center;
@@ -116,39 +114,14 @@ body {
 }
 
 .document-item {
-  display: flex;
   width: 100%;
   justify-content: flex-start;
-  align-items: center;
-  gap: 8px;
   padding: 9px;
   margin-bottom: 7px;
   text-align: left;
   color: #172033;
   background: transparent;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  cursor: pointer;
-  overflow: hidden;
-}
-
-.doc-icon {
-  flex-shrink: 0;
-  line-height: 0;
-}
-
-.document-item span {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.document-item strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-color: #e2e8f0;
 }
 
 .history-list {
@@ -226,6 +199,12 @@ body {
 .document-item:hover {
   background: #eaf1ff;
   border-color: #b9ccff;
+}
+
+.document-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-panel {
