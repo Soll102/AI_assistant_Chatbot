@@ -8,18 +8,14 @@ import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const MAX_QUESTION_LENGTH = 500;
-const WELCOME_MESSAGE = {
-  role: "assistant",
-  content: "",
-  sources: [],
-};
+
 
 function App() {
   const [documents, setDocuments] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [activeDocumentId, setActiveDocumentId] = useState("");
-  const [messages, setMessages] = useState([WELCOME_MESSAGE]);
+  const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isAsking, setIsAsking] = useState(false);
@@ -95,7 +91,7 @@ function App() {
     if (response.ok) {
       const session = await response.json();
       setActiveSessionId(session.id);
-      setMessages([WELCOME_MESSAGE]);
+      setMessages([]);
       await loadSessions();
     }
   }
@@ -109,7 +105,7 @@ function App() {
       setMessages(
         data.length
           ? data.map((message) => ({ role: message.role, content: message.content, sources: [] }))
-          : [WELCOME_MESSAGE],
+          : [],
       );
     }
   }
@@ -122,7 +118,7 @@ function App() {
     setSessions((current) => current.filter((session) => session.id !== sessionId));
     if (activeSessionId === sessionId) {
       setActiveSessionId("");
-      setMessages([WELCOME_MESSAGE]);
+      setMessages([]);
     }
   }
 
@@ -136,7 +132,7 @@ function App() {
       if (activeDocumentId === documentId) {
         setActiveDocumentId(nextDocuments[0]?.id || "");
         setPreviewPage(1);
-        setMessages([WELCOME_MESSAGE]);
+        setMessages([]);
       }
       return nextDocuments;
     });
