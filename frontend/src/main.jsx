@@ -1,10 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { Bot, ChevronLeft, FileText, Loader2, MessageSquarePlus, Send, Trash2, Upload } from "lucide-react";
 import katex from "katex";
 import { marked } from "marked";
 import "katex/dist/katex.min.css";
 import "./styles.css";
+
+// Import optimized PDF components
+import PdfViewer from "./components/PdfViewer";
+import ThumbnailStrip from "./components/ThumbnailStrip";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const MAX_QUESTION_LENGTH = 500;
@@ -30,8 +34,11 @@ function App() {
   const [documentMenu, setDocumentMenu] = useState(null);
   const [previewMenu, setPreviewMenu] = useState(null);
   const [panelSizes, setPanelSizes] = useState(() => {
-    const saved = localStorage.getItem("rag-panel-sizes");
-    return saved ? normalizePanelSizes(JSON.parse(saved)) : { sidebar: 250, preview: 560 };
+    try {
+      const saved = localStorage.getItem("rag-panel-sizes");
+      if (saved) return normalizePanelSizes(JSON.parse(saved));
+    } catch { /* ignore corrupt data */ }
+    return { sidebar: 250, preview: 560 };
   });
   const fileInputRef = useRef(null);
 
@@ -39,10 +46,6 @@ function App() {
     () => documents.find((item) => item.id === activeDocumentId),
     [documents, activeDocumentId],
   );
-
-  const pdfUrl = activeDocumentId
-    ? `${API_BASE}/api/documents/${activeDocumentId}/file#page=${previewPage}&view=FitH`
-    : "";
 
   useEffect(() => {
     loadDocuments();
@@ -89,7 +92,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: "Chat mới",
-        document_id: activeDocumentId || null,
+        document_id: null,
       }),
     });
     if (response.ok) {
@@ -231,7 +234,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: cleanQuestion,
-          document_id: activeDocumentId || null,
+          document_id: null,
           session_id: activeSessionId || null,
         }),
       });
@@ -256,7 +259,7 @@ function App() {
     } catch (error) {
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: `Chat lỗi: ${error.message}`, sources: [] },
+        { role: "assistant", content: 'Lỗi kết nối đến server' },
       ]);
     } finally {
       setIsAsking(false);
@@ -289,7 +292,7 @@ function App() {
         <section className="document-list">
           <h2>Tài liệu</h2>
           {documents.length === 0 ? (
-            <p className="muted">Chưa có PDF nào.</p>
+            <p className="muted">Chưa có tài liệu nào</p>
           ) : (
             documents.map((document) => (
               <div className="document-row" key={document.id}>
@@ -304,9 +307,9 @@ function App() {
                     setDocumentMenu({ documentId: document.id });
                   }}
                 >
-                  <FileText size={18} />
+                  <span className="doc-icon"><FileText size={18} /></span>
                   <span>
-                    <strong>{document.filename}</strong>
+                    <strong title={document.filename}>{document.filename}</strong>
                     <small>
                       {document.pages} trang · {document.chunks} chunks
                     </small>
@@ -383,7 +386,7 @@ function App() {
         </header>
 
         <div className="messages">
-          {messages.map((message, index) => (
+          {messages.filter((message) => message.content).map((message, index) => (
             <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
               <div
                 className="message-body"
@@ -426,7 +429,7 @@ function App() {
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={activeDocument ? "Hỏi về PDF này..." : "Upload hoặc chọn PDF trước..."}
+            placeholder={documents.length > 0 ? "Hỏi về tất cả PDF đã upload..." : "Upload PDF trước..."}
             maxLength={MAX_QUESTION_LENGTH}
             rows={1}
           />
@@ -479,13 +482,20 @@ function App() {
               Ẩn preview
             </button>
           )}
-          {pdfUrl ? (
-            <iframe
-              key={`${activeDocumentId}-${previewPage}`}
-              className="pdf-frame"
-              src={pdfUrl}
-              title={`PDF preview trang ${previewPage}`}
-            />
+          {activeDocumentId ? (
+            <div className="flex h-full w-full">
+              <ThumbnailStrip 
+                pdfId={activeDocumentId} 
+                currentPage={previewPage} 
+                totalPages={activeDocument?.pages || 0} 
+                onPageClick={setPreviewPage} 
+              />
+              <PdfViewer 
+                pdfId={activeDocumentId} 
+                pageNum={previewPage} 
+                onPageChange={setPreviewPage} 
+              />
+            </div>
           ) : (
             <div className="empty-preview">Upload PDF để xem preview ở đây.</div>
           )}
@@ -526,13 +536,13 @@ function formatMath(content) {
     .replace(/\$\$([\s\S]+?)\$\$/g, (_, expression) => {
       return stashMath(renderMath(expression, true));
     })
-    .replace(/\\\[([\s\S]+?)\\\]/g, (_, expression) => {
+    .replace(/\\\[([\s\S]+?)\\\\]/g, (_, expression) => {
       return stashMath(renderMath(expression, true));
     })
     .replace(/(^|[^$])\$([^$\n]{1,160})\$(?!\$)/g, (_, prefix, expression) => {
       return `${prefix}${stashMath(renderMath(expression, false))}`;
     })
-    .replace(/\\\(([^)\n]{1,160})\\\)/g, (_, expression) => {
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, expression) => {
       return stashMath(renderMath(expression, false));
     })
     .replace(/(^|\n)([^\n]*\\(?:sum|substack|frac|sqrt|neq|leq|geq|log|alpha|beta|theta|hat|bar)[^\n]*)/g, (_, prefix, expression) => {

@@ -3,6 +3,9 @@ import re
 from typing import Any
 from uuid import uuid4
 
+import os
+os.environ["CHROMA_TELEMETRY"] = "false"
+
 import chromadb # type: ignore
 from chromadb.config import Settings as ChromaSettings # type: ignore
 from sentence_transformers import SentenceTransformer # type: ignore
@@ -321,45 +324,6 @@ def context_start_page(query: str, source: SourceChunk, candidates: list[SourceC
 def is_procedure_query(query: str) -> bool:
     tokens = set(tokenize(query))
     return bool(tokens & PROCEDURE_TERMS)
-
-
-def add_procedure_candidates(
-    query: str,
-    ranked_sources: list[SourceChunk],
-    where: dict[str, str] | None,
-    query_collection,
-    embed,
-) -> list[SourceChunk]:
-    expanded_query = f"{query} prepare data select model train fine tune evaluate pipeline steps"
-    results = query_collection.query(
-        query_embeddings=embed([expanded_query]),
-        n_results=80,
-        where=where,
-        include=["documents", "metadatas", "distances"],
-    )
-    existing_keys = {(source.document_id, source.page, source.text) for source in ranked_sources}
-    expanded_sources: list[SourceChunk] = []
-    for text, metadata, distance in zip(
-        results.get("documents", [[]])[0],
-        results.get("metadatas", [[]])[0],
-        results.get("distances", [[]])[0],
-    ):
-        key = (str(metadata["document_id"]), int(metadata["page"]), str(text))
-        if key in existing_keys:
-            continue
-        score = rerank_score(query=expanded_query, text=str(text), distance=float(distance))
-        expanded_sources.append(
-            SourceChunk(
-                document_id=str(metadata["document_id"]),
-                filename=str(metadata["filename"]),
-                page=int(metadata["page"]),
-                preview_page=int(metadata["page"]),
-                text=str(text),
-                score=score,
-            )
-        )
-
-    return sorted([*ranked_sources, *expanded_sources], key=lambda source: source.score or 0, reverse=True)
 
 
 def lexical_score(query: str, text: str) -> float:

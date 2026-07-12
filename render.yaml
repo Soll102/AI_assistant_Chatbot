@@ -11,8 +11,8 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-3.1-flash-lite
+        value: gemini-3.1-flash-lite # DO NOT CHANGE
       - key: BACKEND_CORS_ORIGINS
-        value: https://soll102.github.io
+        value: https://soll102.github.io 
       - key: ENABLE_GEMINI_VISION_FALLBACK
-        value: "false"
+        value: "true"
