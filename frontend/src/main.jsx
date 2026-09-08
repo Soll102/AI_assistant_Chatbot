@@ -30,15 +30,22 @@ function App() {
     return saved ? normalizePanelSizes(JSON.parse(saved)) : { sidebar: 250, preview: 560 };
   });
   const fileInputRef = useRef(null);
+  // Blob URL của file vừa upload trên máy user. Vercel serverless dùng /tmp
+  // ephemeral + nhiều instance nên file backend có thể 404 ngay sau upload;
+  // preview local thì luôn xem được mà không cần qua backend.
+  const [localPdfUrls, setLocalPdfUrls] = useState({});
 
   const activeDocument = useMemo(
     () => documents.find((item) => item.id === activeDocumentId),
     [documents, activeDocumentId],
   );
 
-  const pdfUrl = activeDocumentId
-    ? `${API_BASE}/api/documents/${activeDocumentId}/file#page=${previewPage}&view=FitH`
-    : "";
+  const localPdfUrl = activeDocumentId ? localPdfUrls[activeDocumentId] : "";
+  const pdfUrl = localPdfUrl
+    ? `${localPdfUrl}#page=${previewPage}&view=FitH`
+    : activeDocumentId
+      ? `${API_BASE}/api/documents/${activeDocumentId}/file#page=${previewPage}&view=FitH`
+      : "";
 
   useEffect(() => {
     loadDocuments();
@@ -127,6 +134,12 @@ function App() {
     const response = await fetch(`${API_BASE}/api/documents/${documentId}`, { method: "DELETE" });
     if (!response.ok) return;
 
+    setLocalPdfUrls((current) => {
+      if (current[documentId]) URL.revokeObjectURL(current[documentId].split("#")[0]);
+      const { [documentId]: _removed, ...rest } = current;
+      return rest;
+    });
+
     setDocuments((current) => {
       const nextDocuments = current.filter((document) => document.id !== documentId);
       if (activeDocumentId === documentId) {
@@ -192,6 +205,9 @@ function App() {
       setDocuments((current) => [data, ...current.filter((item) => item.id !== data.id)]);
       setActiveDocumentId(data.id);
       setPreviewPage(1);
+      // Giữ blob URL để preview local, không phụ thuộc file trên backend.
+      const blobUrl = URL.createObjectURL(file);
+      setLocalPdfUrls((current) => ({ ...current, [data.id]: blobUrl }));
       setMessages((current) => [
         ...current,
         {
