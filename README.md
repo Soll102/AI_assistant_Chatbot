@@ -9,7 +9,7 @@ A PDF RAG chatbot with document upload, PDF preview, and chat history.
 - Split text into chunks with page metadata
 - Create local embeddings with Sentence Transformers
 - Store vectors in ChromaDB
-- Retrieve relevant chunks and generate answers with Gemini
+- Retrieve relevant chunks and generate answers with any OpenRouter model
 - Save chat history with SQLite
 - React UI with chat, PDF preview, and resizable panels
 
@@ -17,7 +17,7 @@ A PDF RAG chatbot with document upload, PDF preview, and chat history.
 
 - Frontend: React, Vite
 - Backend: FastAPI
-- LLM: Gemini API
+- LLM: OpenRouter API (OpenAI-compatible)
 - Embeddings: Sentence Transformers
 - Vector DB: ChromaDB
 - PDF processing: PyMuPDF
@@ -44,8 +44,8 @@ pip install -r requirements.txt
 Create `backend/.env`:
 
 ```env
-GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-3.1-flash-lite
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=google/gemini-2.5-flash-lite
 ```
 
 Run the backend:

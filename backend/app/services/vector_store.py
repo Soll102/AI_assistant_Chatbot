@@ -1,127 +1,176 @@
-from pathlib import Path
+"""Lightweight lexical vector store for serverless deploys (Vercel Free).
+
+Replaces ChromaDB + SentenceTransformers (which blow past Vercel's 500MB
+function limit via torch/onnxruntime) with a stdlib+json + lexical ranking
+store. Same public API as the old VectorStore so main.py / rag_tools.py
+keep working.
+"""
+from __future__ import annotations
+
+import json
 import re
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
-
-import chromadb # type: ignore
-from chromadb.config import Settings as ChromaSettings # type: ignore
-from sentence_transformers import SentenceTransformer # type: ignore
 
 from app.schemas import DocumentSummary, SourceChunk
 from app.services.pdf_processor import TextChunk
 
 
 class VectorStore:
-    def __init__(self, persist_dir: Path, embedding_model_name: str) -> None:
-        self.client = chromadb.PersistentClient(
-            path=str(persist_dir),
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        self.collection = self.client.get_or_create_collection(name="pdf_chunks")
-        self.embedding_model = SentenceTransformer(embedding_model_name)
+    """JSON-persisted chunk store with TF-style lexical ranking."""
 
+    def __init__(
+        self,
+        persist_dir: Path,
+        embedding_model_name: str = "",
+        rerank_model_name: str = "",
+        rerank_candidates: int = 24,
+    ) -> None:
+        # Args kept for backward compat with config.py / main.py.
+        # embedding_model_name / rerank_model_name are intentionally ignored:
+        # no torch / transformers on Vercel.
+        _ = (embedding_model_name, rerank_model_name, rerank_candidates)
+        self.persist_dir = Path(persist_dir)
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        self.store_path = self.persist_dir / "lexical_store.json"
+        self._chunks: list[dict[str, Any]] = []
+        self._documents: dict[str, dict[str, Any]] = {}
+        self._load()
+
+    # -- persistence -----------------------------------------------------
+    def _load(self) -> None:
+        if not self.store_path.exists():
+            return
+        try:
+            payload = json.loads(self.store_path.read_text(encoding="utf-8"))
+            self._chunks = payload.get("chunks", [])
+            self._documents = payload.get("documents", {})
+        except (ValueError, OSError):
+            self._chunks = []
+            self._documents = {}
+
+    def _save(self) -> None:
+        try:
+            self.store_path.write_text(
+                json.dumps(
+                    {"chunks": self._chunks, "documents": self._documents},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            # Vercel read-only FS outside /tmp — search still works in-memory.
+            pass
+
+    # -- writes ----------------------------------------------------------
     def add_document(self, document_id: str, filename: str, pages: int, chunks: list[TextChunk]) -> DocumentSummary:
-        ids = [f"{document_id}:{index}" for index in range(len(chunks))]
-        texts = [chunk.text for chunk in chunks]
-        embeddings = self._embed(texts)
-        metadatas: list[dict[str, Any]] = [
-            {
-                "document_id": document_id,
-                "filename": filename,
-                "page": chunk.page,
-                "pages": pages,
-                "chunk_index": index,
-            }
-            for index, chunk in enumerate(chunks)
-        ]
-
-        if ids:
-            self.collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
-
+        # Remove any stale chunks for same id (re-upload safety).
+        self._chunks = [c for c in self._chunks if c["document_id"] != document_id]
+        for index, chunk in enumerate(chunks):
+            self._chunks.append(
+                {
+                    "id": f"{document_id}:{index}",
+                    "document_id": document_id,
+                    "filename": filename,
+                    "page": chunk.page,
+                    "pages": pages,
+                    "chunk_index": index,
+                    "text": chunk.text,
+                }
+            )
+        self._documents[document_id] = {"filename": filename, "pages": pages}
+        self._save()
         return DocumentSummary(id=document_id, filename=filename, pages=pages, chunks=len(chunks))
 
-    def search(self, query: str, top_k: int, document_id: str | None = None) -> list[SourceChunk]:
-        where = {"document_id": document_id} if document_id else None
-        candidate_count = max(top_k * 20, 80)
-        results = self.collection.query(
-            query_embeddings=self._embed([query]),
-            n_results=candidate_count,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-
-        sources: list[SourceChunk] = []
-        for text, metadata, distance in zip(documents, metadatas, distances):
-            combined_score = rerank_score(query=query, text=str(text), distance=float(distance))
-            sources.append(
-                SourceChunk(
-                    document_id=str(metadata["document_id"]),
-                    filename=str(metadata["filename"]),
-                    page=int(metadata["page"]),
-                    preview_page=int(metadata["page"]),
-                    text=str(text),
-                    score=combined_score,
-                )
-            )
-        ranked_sources = sorted(sources, key=lambda source: source.score or 0, reverse=True)
-        top_sources = relevant_sources(query, ranked_sources, top_k)
-        for source in top_sources:
-            nearby_sources = self.sources_near_page(source.document_id, source.page, lookback_pages=12)
-            source.preview_page = context_start_page(query, source, [*nearby_sources, *ranked_sources])
-        return dedupe_sources(top_sources)
-
-    def list_documents(self) -> list[DocumentSummary]:
-        results = self.collection.get(include=["metadatas"])
-        grouped: dict[str, dict[str, Any]] = {}
-        for metadata in results.get("metadatas", []):
-            document_id = str(metadata["document_id"])
-            item = grouped.setdefault(
-                document_id,
-                {
-                    "id": document_id,
-                    "filename": str(metadata["filename"]),
-                    "pages": int(metadata.get("pages", 0)),
-                    "chunks": 0,
-                },
-            )
-            item["chunks"] += 1
-        return [DocumentSummary(**item) for item in grouped.values()]
-
     def delete_document(self, document_id: str) -> bool:
-        existing = self.collection.get(where={"document_id": document_id}, include=["metadatas"])
-        ids = existing.get("ids", [])
-        if not ids:
-            return False
-        self.collection.delete(where={"document_id": document_id})
-        return True
+        before = len(self._chunks)
+        self._chunks = [c for c in self._chunks if c["document_id"] != document_id]
+        existed = len(self._chunks) != before or document_id in self._documents
+        self._documents.pop(document_id, None)
+        if existed:
+            self._save()
+        return existed
 
     def new_document_id(self) -> str:
         return uuid4().hex
 
-    def _embed(self, texts: list[str]) -> list[list[float]]:
-        vectors = self.embedding_model.encode(texts, normalize_embeddings=True)
-        return vectors.tolist()
+    # -- reads -----------------------------------------------------------
+    def list_documents(self) -> list[DocumentSummary]:
+        counts: dict[str, int] = {}
+        for chunk in self._chunks:
+            counts[chunk["document_id"]] = counts.get(chunk["document_id"], 0) + 1
+        summaries: list[DocumentSummary] = []
+        for document_id, meta in self._documents.items():
+            summaries.append(
+                DocumentSummary(
+                    id=document_id,
+                    filename=str(meta.get("filename", document_id)),
+                    pages=int(meta.get("pages", 0)),
+                    chunks=counts.get(document_id, 0),
+                )
+            )
+        # Orphan chunks without doc meta (e.g. partial writes).
+        for document_id in counts:
+            if document_id not in self._documents:
+                summaries.append(
+                    DocumentSummary(id=document_id, filename=document_id, pages=0, chunks=counts[document_id])
+                )
+        return summaries
+
+    def search(self, query: str, top_k: int, document_id: str | None = None) -> list[SourceChunk]:
+        candidates: list[SourceChunk] = []
+        for chunk in self._chunks:
+            if document_id and chunk["document_id"] != document_id:
+                continue
+            score = lexical_score(query, str(chunk["text"]))
+            # Small boost so identifier-heavy queries (table ids, codes)
+            # surface exact matches first, mirroring old behaviour.
+            candidates.append(
+                SourceChunk(
+                    document_id=str(chunk["document_id"]),
+                    filename=str(chunk["filename"]),
+                    page=int(chunk["page"]),
+                    preview_page=int(chunk["page"]),
+                    text=str(chunk["text"]),
+                    score=score,
+                )
+            )
+        # Drop zero-overlap chunks unless nothing matched at all.
+        scored = [c for c in candidates if (c.score or 0) > 0]
+        ranked = sorted(scored or candidates, key=lambda s: s.score or 0.0, reverse=True)
+
+        identifier_terms = important_identifier_terms(query)
+        if identifier_terms:
+            exact_sources = sources_matching_identifiers(identifier_terms, ranked)
+            if exact_sources:
+                ranked = exact_sources[:top_k]
+            else:
+                ranked = ranked[:top_k]
+        else:
+            ranked = ranked[:top_k]
+
+        top_sources = ranked
+        for source in top_sources:
+            nearby_sources = self.sources_near_page(source.document_id, source.page, lookback_pages=12)
+            source.preview_page = context_start_page(query, source, [*nearby_sources, *ranked])
+        return dedupe_sources(top_sources)
 
     def sources_near_page(self, document_id: str, page: int, lookback_pages: int) -> list[SourceChunk]:
-        results = self.collection.get(
-            where={"document_id": document_id},
-            include=["documents", "metadatas"],
-        )
-        sources: list[SourceChunk] = []
         window_start = max(1, page - lookback_pages)
-        for text, metadata in zip(results.get("documents", []), results.get("metadatas", [])):
-            chunk_page = int(metadata["page"])
+        sources: list[SourceChunk] = []
+        for chunk in self._chunks:
+            if chunk["document_id"] != document_id:
+                continue
+            chunk_page = int(chunk["page"])
             if window_start <= chunk_page <= page:
                 sources.append(
                     SourceChunk(
-                        document_id=str(metadata["document_id"]),
-                        filename=str(metadata["filename"]),
+                        document_id=str(chunk["document_id"]),
+                        filename=str(chunk["filename"]),
                         page=chunk_page,
                         preview_page=chunk_page,
-                        text=str(text),
+                        text=str(chunk["text"]),
                         score=None,
                     )
                 )
@@ -198,41 +247,6 @@ STOPWORDS = {
 }
 
 
-def rerank_score(query: str, text: str, distance: float) -> float:
-    vector_score = 1.0 / (1.0 + max(distance, 0.0))
-    keyword_score = lexical_score(query, text)
-    exact_bonus = exact_match_bonus(query, text)
-    return (0.62 * vector_score) + (0.33 * keyword_score) + exact_bonus
-
-
-def relevant_sources(query: str, ranked_sources: list[SourceChunk], top_k: int) -> list[SourceChunk]:
-    if not ranked_sources:
-        return []
-
-    identifier_terms = important_identifier_terms(query)
-    if identifier_terms:
-        exact_sources = sources_matching_identifiers(identifier_terms, ranked_sources)
-        if exact_sources:
-            return exact_sources[:top_k]
-
-    best_score = ranked_sources[0].score or 0.0
-    best_keyword_score = lexical_score(query, ranked_sources[0].text)
-    selected = [ranked_sources[0]]
-
-    for source in ranked_sources[1:]:
-        source_score = source.score or 0.0
-        keyword_score = lexical_score(query, source.text)
-        close_enough = best_score > 0 and source_score >= best_score * 0.88
-        has_keyword_signal = keyword_score >= max(0.16, best_keyword_score * 0.45)
-
-        if close_enough and has_keyword_signal:
-            selected.append(source)
-        if len(selected) >= top_k:
-            break
-
-    return selected
-
-
 def dedupe_sources(sources: list[SourceChunk]) -> list[SourceChunk]:
     unique_sources: list[SourceChunk] = []
     seen_locations: set[tuple[str, int]] = set()
@@ -298,20 +312,13 @@ def context_start_page(query: str, source: SourceChunk, candidates: list[SourceC
         return source.page
 
     window_start = max(1, source.page - 12)
-    minimum_score = source_score * 0.72
-    related = []
-    for candidate in candidates:
-        if candidate.document_id != source.document_id or not window_start <= candidate.page <= source.page:
-            continue
-
-        keyword_score = lexical_score(query, candidate.text)
-        if candidate.score is None and keyword_score >= 0.30:
-            related.append(candidate)
-            continue
-
-        candidate_score = candidate.score if candidate.score is not None else source_score * keyword_score
-        if candidate_score >= minimum_score and keyword_score > 0:
-            related.append(candidate)
+    related = [
+        candidate
+        for candidate in candidates
+        if candidate.document_id == source.document_id
+        and window_start <= candidate.page <= source.page
+        and lexical_score(query, candidate.text) > 0
+    ]
     if not related:
         return source.page
 
@@ -323,45 +330,6 @@ def is_procedure_query(query: str) -> bool:
     return bool(tokens & PROCEDURE_TERMS)
 
 
-def add_procedure_candidates(
-    query: str,
-    ranked_sources: list[SourceChunk],
-    where: dict[str, str] | None,
-    query_collection,
-    embed,
-) -> list[SourceChunk]:
-    expanded_query = f"{query} prepare data select model train fine tune evaluate pipeline steps"
-    results = query_collection.query(
-        query_embeddings=embed([expanded_query]),
-        n_results=80,
-        where=where,
-        include=["documents", "metadatas", "distances"],
-    )
-    existing_keys = {(source.document_id, source.page, source.text) for source in ranked_sources}
-    expanded_sources: list[SourceChunk] = []
-    for text, metadata, distance in zip(
-        results.get("documents", [[]])[0],
-        results.get("metadatas", [[]])[0],
-        results.get("distances", [[]])[0],
-    ):
-        key = (str(metadata["document_id"]), int(metadata["page"]), str(text))
-        if key in existing_keys:
-            continue
-        score = rerank_score(query=expanded_query, text=str(text), distance=float(distance))
-        expanded_sources.append(
-            SourceChunk(
-                document_id=str(metadata["document_id"]),
-                filename=str(metadata["filename"]),
-                page=int(metadata["page"]),
-                preview_page=int(metadata["page"]),
-                text=str(text),
-                score=score,
-            )
-        )
-
-    return sorted([*ranked_sources, *expanded_sources], key=lambda source: source.score or 0, reverse=True)
-
-
 def lexical_score(query: str, text: str) -> float:
     query_terms = expand_terms(tokenize(query))
     if not query_terms:
@@ -370,16 +338,6 @@ def lexical_score(query: str, text: str) -> float:
     text_terms = set(tokenize(text))
     matches = sum(1 for term in query_terms if term in text_terms)
     return matches / max(len(query_terms), 1)
-
-
-def exact_match_bonus(query: str, text: str) -> float:
-    query_tokens = [token for token in tokenize(query) if token not in STOPWORDS]
-    text_lower = text.lower()
-    bonus = 0.0
-    for token in query_tokens:
-        if len(token) >= 4 and token in text_lower:
-            bonus += 0.025
-    return min(bonus, 0.12)
 
 
 def expand_terms(tokens: list[str]) -> set[str]:

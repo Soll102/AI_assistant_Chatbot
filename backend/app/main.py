@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 from shutil import copyfileobj
 
@@ -8,20 +9,33 @@ from fastapi.responses import FileResponse
 from app.config import Settings, get_settings
 from app.schemas import ChatMessage, ChatRequest, ChatResponse, ChatSession, CreateSessionRequest, DocumentSummary
 from app.services.chat_history import ChatHistoryStore
-from app.services.gemini_client import GeminiClient
+from app.services.llm_client import ChatState, LLMClient, is_api_error
 from app.services.pdf_processor import PageText, chunk_pages, extract_pdf_pages, render_page_png
-from app.services.rag_tools import RagToolRunner
+from app.services.rag_tools import RagToolRunner, ToolPlan, fallback_tool_plan, match_document_by_name, quick_tool_plan
 from app.services.vector_store import VectorStore
 
-app = FastAPI(title="Multimodal RAG Chatbot")
 
-
-@app.on_event("startup")
-def startup() -> None:
+def _init_state(target) -> None:
     settings = get_settings()
-    app.state.vector_store = VectorStore(settings.chroma_dir, settings.embedding_model)
-    app.state.gemini = GeminiClient(settings.gemini_api_key, settings.gemini_model)
-    app.state.chat_history = ChatHistoryStore(settings.chat_db_path)
+    if not hasattr(target, "vector_store"):
+        target.vector_store = VectorStore(
+            settings.chroma_dir, settings.embedding_model, settings.rerank_model, settings.rerank_candidates
+        )
+    if not hasattr(target, "llm"):
+        target.llm = LLMClient(
+            settings.openrouter_api_key, settings.openrouter_model, settings.openrouter_fallback_model
+        )
+    if not hasattr(target, "chat_history"):
+        target.chat_history = ChatHistoryStore(settings.chat_db_path)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _init_state(app.state)
+    yield
+
+
+app = FastAPI(title="Multimodal RAG Chatbot", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -40,14 +54,17 @@ app.add_middleware(
 
 
 def vector_store() -> VectorStore:
+    _init_state(app.state)
     return app.state.vector_store
 
 
-def gemini_client() -> GeminiClient:
-    return app.state.gemini
+def llm_client() -> LLMClient:
+    _init_state(app.state)
+    return app.state.llm
 
 
 def chat_history() -> ChatHistoryStore:
+    _init_state(app.state)
     return app.state.chat_history
 
 
@@ -115,7 +132,7 @@ def upload_document(
             pdf_path=pdf_path,
             pages=pages,
             min_text_chars=config.vision_min_text_chars,
-            gemini=gemini_client(),
+            llm=llm_client(),
         )
 
     chunks = chunk_pages(pages, config.chunk_size, config.chunk_overlap)
@@ -124,7 +141,7 @@ def upload_document(
             status_code=422,
             detail=(
                 "Không extract được text từ PDF. Nếu đây là PDF scan, hãy cấu hình "
-                "GEMINI_API_KEY và bật ENABLE_GEMINI_VISION_FALLBACK=true."
+                "OPENROUTER_API_KEY và bật ENABLE_GEMINI_VISION_FALLBACK=true."
             ),
         )
 
@@ -167,7 +184,7 @@ def chat(
     request: ChatRequest,
     config: Settings = Depends(get_settings),
     store: VectorStore = Depends(vector_store),
-    gemini: GeminiClient = Depends(gemini_client),
+    llm: LLMClient = Depends(llm_client),
     history: ChatHistoryStore = Depends(chat_history),
 ) -> ChatResponse:
     question = request.question.strip()
@@ -182,8 +199,42 @@ def chat(
     history.add_message(session.id, "user", question)
     history.update_title_from_question(session.id, question)
 
-    tool_plan = gemini.plan_tool_call(question, has_document=bool(request.document_id))
-    tool_result = RagToolRunner(store).run(tool_plan, top_k=config.top_k, document_id=request.document_id)
+    quick = quick_tool_plan(question)
+    if quick is not None:
+        state = ChatState(tool=quick)
+    elif not config.enable_tool_planning:
+        state = ChatState(tool=fallback_tool_plan(question))
+    else:
+        state = llm.start_chat(question, has_document=True)
+    if state.answer is not None:
+        history.add_message(session.id, "assistant", state.answer)
+        return ChatResponse(
+            session_id=session.id,
+            answer=state.answer,
+            sources=[],
+            tool_name=None,
+            verification="skipped",
+        )
+
+    tool_plan = state.tool
+    if tool_plan.name == "list_pdfs":
+        answer = llm.list_documents_answer(store.list_documents())
+        history.add_message(session.id, "assistant", answer)
+        return ChatResponse(
+            session_id=session.id,
+            answer=answer,
+            sources=[],
+            tool_name=tool_plan.name,
+            verification="skipped",
+        )
+
+    document_id = request.document_id
+    if document_id is None:
+        matched = match_document_by_name(question, store.list_documents())
+        if matched is not None:
+            document_id = matched.id
+
+    tool_result = RagToolRunner(store).run(tool_plan, top_k=config.top_k, document_id=document_id)
     sources = tool_result.sources
     if not sources:
         answer = "Chưa tìm thấy nội dung liên quan trong tài liệu."
@@ -196,11 +247,11 @@ def chat(
             verification="skipped",
         )
 
-    sources = enrich_formula_sources(question, sources, config, gemini)
-    answer = gemini.answer(question, sources)
+    sources = enrich_formula_sources(question, sources, config, llm)
+    answer = llm.finalize_with_sources(question, sources, tool_plan, state.tool_call_id)
     verification = "disabled"
     if config.enable_answer_verification:
-        answer, verification = gemini.verify_answer(question, answer, sources)
+        answer, verification = llm.verify_answer(question, answer, sources)
     history.add_message(session.id, "assistant", answer)
     return ChatResponse(
         session_id=session.id,
@@ -215,7 +266,7 @@ def enrich_low_text_pages_with_vision(
     pdf_path: Path,
     pages: list[PageText],
     min_text_chars: int,
-    gemini: GeminiClient,
+    llm: LLMClient,
 ) -> list[PageText]:
     enriched: list[PageText] = []
     for page in pages:
@@ -224,7 +275,7 @@ def enrich_low_text_pages_with_vision(
             continue
 
         image_bytes = render_page_png(pdf_path, page.page)
-        vision_text = gemini.extract_page_from_image(image_bytes, page.page).strip()
+        vision_text = llm.extract_page_from_image(image_bytes, page.page).strip()
         combined = "\n\n".join(part for part in [page.text.strip(), vision_text] if part)
         enriched.append(PageText(page=page.page, text=combined))
 
@@ -235,9 +286,9 @@ def enrich_formula_sources(
     question: str,
     sources: list,
     config: Settings,
-    gemini: GeminiClient,
+    llm: LLMClient,
 ) -> list:
-    if not should_read_formula_from_page_image(question) or not gemini.api_key:
+    if not should_read_formula_from_page_image(question) or not llm.supports_vision():
         return sources
 
     enriched_sources = list(sources)
@@ -248,8 +299,8 @@ def enrich_formula_sources(
 
     page_number = source.preview_page or source.page
     image_bytes = render_page_png(pdf_path, page_number)
-    visual_text = gemini.extract_page_from_image(image_bytes, page_number).strip()
-    if visual_text and not visual_text.startswith(("Gemini API lỗi", "Không gọi được Gemini API")):
+    visual_text = llm.extract_page_from_image(image_bytes, page_number).strip()
+    if visual_text and not is_api_error(visual_text):
         source.text = (
             f"{source.text}\n\n"
             f"[Nội dung đọc thêm từ ảnh trang {page_number}, dùng cho công thức/hình ảnh]\n"

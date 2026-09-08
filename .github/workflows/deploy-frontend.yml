@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
   workflow_dispatch:
 
 permissions:
@@ -35,10 +36,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check VITE_API_BASE
+        run: |
+          if [ -z "$VITE_API_BASE" ]; then echo "::error::Set repo Variables.VITE_API_BASE to your Vercel backend URL, e.g. https://your-backend.vercel.app"; exit 1; fi
+        env:
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+
       - name: Build
         run: npm run build
         env:
-          VITE_API_BASE: ${{ vars.VITE_API_BASE || 'http://127.0.0.1:8000' }}
+          # Set repo variable VITE_API_BASE to your Vercel backend URL, e.g.
+          # https://your-backend.vercel.app — GitHub: Settings → Variables → New.
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
