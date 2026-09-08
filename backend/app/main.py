@@ -68,6 +68,11 @@ def chat_history() -> ChatHistoryStore:
     return app.state.chat_history
 
 
+@app.get("/")
+def root() -> dict[str, str]:
+    return {"status": "ok", "docs": "/docs"}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
