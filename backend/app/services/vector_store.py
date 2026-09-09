@@ -150,7 +150,7 @@ class VectorStore:
         else:
             ranked = ranked[:top_k]
 
-        top_sources = ranked
+        top_sources = confident_sources(ranked, query)
         for source in top_sources:
             nearby_sources = self.sources_near_page(source.document_id, source.page, lookback_pages=12)
             source.preview_page = context_start_page(query, source, [*nearby_sources, *ranked])
@@ -245,6 +245,41 @@ STOPWORDS = {
     "in",
     "of",
 }
+
+
+def confident_sources(ranked: list[SourceChunk], query: str) -> list[SourceChunk]:
+    """Gợi ý tối đa 1 đoạn; đoạn thứ 2 chỉ khi cực kì chắc chắn.
+
+    - Không có bằng chứng (score 0 và không chứa identifier) -> rỗng để
+      caller trả lời "không tìm thấy" thay vì gợi ý bừa.
+    - Đoạn 2 chỉ được thêm khi ngang ngửa đoạn 1 (score >= 85% và
+      tuyệt đối >= 0.4), hoặc cả 2 chứa identifier chính xác từ câu hỏi
+      (mã bảng, số hiệu, công thức có số).
+    """
+    if not ranked:
+        return []
+    identifier_terms = important_identifier_terms(query)
+
+    first = ranked[0]
+    first_score = first.score or 0.0
+    first_has_id = bool(identifier_terms) and has_any_identifier(first.text, identifier_terms)
+    if first_score <= 0 and not first_has_id:
+        return []
+
+    sources = [first]
+    if len(ranked) >= 2:
+        second = ranked[1]
+        second_score = second.score or 0.0
+        second_has_id = bool(identifier_terms) and has_any_identifier(second.text, identifier_terms)
+        near_tie = first_score > 0 and second_score >= 0.85 * first_score and second_score >= 0.4
+        both_identifiers = first_has_id and second_has_id and second_score > 0
+        if near_tie or both_identifiers:
+            sources.append(second)
+    return sources
+
+
+def has_any_identifier(text: str, identifier_terms: set[str]) -> bool:
+    return any(contains_identifier(text, term) for term in identifier_terms)
 
 
 def dedupe_sources(sources: list[SourceChunk]) -> list[SourceChunk]:
