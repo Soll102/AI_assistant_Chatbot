@@ -391,7 +391,6 @@ body {
   cursor: col-resize;
   background: var(--handle);
 }
-}
 
 .resize-handle::before {
   content: "";
