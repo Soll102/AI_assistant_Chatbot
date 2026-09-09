@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import base64
 import json
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -65,8 +66,29 @@ Bạn là trợ lý AI đọc PDF trong một hệ thống RAG.
 Bạn chỉ được trả lời dựa trên nội dung tool trả về từ tài liệu.
 Trả lời bằng tiếng Việt, ngắn gọn, trực tiếp, không lan man.
 Không tự ghi nguồn, số trang, tên file, hoặc citation trong câu trả lời.
+Cấm thêm bất kỳ tiền tố phân loại nào (như "User Safety:", "Safety:",
+"Content Safety:"). Bắt đầu thẳng vào câu trả lời.
 Nếu dữ liệu từ tool không đủ, nói ngắn gọn rằng tài liệu không cung cấp đủ thông tin.
 """.strip()
+
+
+# Một số model free có thói quen prepend verdict an toàn
+# (vd. "User Safety: safe") trước câu trả lời. Cắt bỏ các dòng đó ở đầu.
+SAFETY_PREAMBLE_RE = re.compile(
+    r"^\s*(user\s*safety|content\s*safety|safety\s*assessment|safety|an\s*toàn)\s*:.*$",
+    re.IGNORECASE,
+)
+
+
+def strip_safety_preamble(text: str) -> str:
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines) and SAFETY_PREAMBLE_RE.match(lines[index]):
+        index += 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    cleaned = "\n".join(lines[index:]).strip()
+    return cleaned or text.strip()
 
 
 @dataclass(frozen=True)
@@ -117,7 +139,7 @@ class LLMClient:
 
         text = str((message or {}).get("content") or "").strip()
         if text:
-            return ChatState(answer=text)
+            return ChatState(answer=strip_safety_preamble(text))
 
         return ChatState(tool=fallback_tool_plan(question))
 
@@ -169,7 +191,8 @@ class LLMClient:
             return self._answer_fallback(question, sources)
 
         text = str((message or {}).get("content") or "").strip()
-        return text or "Không nhận được nội dung trả lời từ OpenRouter."
+        cleaned = strip_safety_preamble(text)
+        return cleaned or "Không nhận được nội dung trả lời từ OpenRouter."
 
     def list_documents_answer(self, documents: list) -> str:
         if not documents:
@@ -178,7 +201,7 @@ class LLMClient:
         return "Các PDF đã upload:\n" + "\n".join(lines)
 
     def _answer_fallback(self, question: str, sources: list[SourceChunk]) -> str:
-        return self._generate_text(build_prompt(question, sources))
+        return strip_safety_preamble(self._generate_text(build_prompt(question, sources)))
 
     def verify_answer(self, question: str, answer: str, sources: list[SourceChunk]) -> tuple[str, str]:
         if not self.api_key or not sources or is_api_error(answer):
@@ -194,9 +217,9 @@ class LLMClient:
         fixed_answer = str(payload.get("fixed_answer") or "").strip()
         reason = str(payload.get("reason") or "").strip()
         if is_supported:
-            return answer, f"supported: {reason}" if reason else "supported"
+            return strip_safety_preamble(answer), f"supported: {reason}" if reason else "supported"
         if fixed_answer:
-            return fixed_answer, f"revised: {reason}" if reason else "revised"
+            return strip_safety_preamble(fixed_answer), f"revised: {reason}" if reason else "revised"
         return "Tài liệu không cung cấp đủ thông tin để trả lời chắc chắn.", "unsupported"
 
     def extract_page_from_image(self, image_bytes: bytes, page_number: int) -> str:
