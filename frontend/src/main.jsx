@@ -8,14 +8,46 @@ import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const MAX_QUESTION_LENGTH = 500;
+const CHAT_CACHE_KEY = "rag-chat-cache-v1";
+const MAX_CACHED_SESSIONS = 30;
+const MAX_CACHED_MESSAGES = 200;
+
+// Cache localStorage để thoát ra vào lại vẫn thấy lịch sử.
+// Backend Vercel dùng /tmp ephemeral nên có thể quên session bất cứ lúc nào;
+// các entry backend không còn sẽ được đánh dấu stale (chỉ xem + gửi tiếp
+// sẽ tự tách sang chat mới).
+function loadChatCache() {
+  try {
+    const raw = localStorage.getItem(CHAT_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      messagesBySession:
+        parsed.messagesBySession && typeof parsed.messagesBySession === "object"
+          ? parsed.messagesBySession
+          : {},
+      documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+      activeSessionId: typeof parsed.activeSessionId === "string" ? parsed.activeSessionId : "",
+      activeDocumentId: typeof parsed.activeDocumentId === "string" ? parsed.activeDocumentId : "",
+    };
+  } catch {
+    return null;
+  }
+}
 
 
 function App() {
-  const [documents, setDocuments] = useState([]);
-  const [sessions, setSessions] = useState([]);
-  const [activeSessionId, setActiveSessionId] = useState("");
-  const [activeDocumentId, setActiveDocumentId] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [initialCache] = useState(loadChatCache);
+  const [documents, setDocuments] = useState(initialCache?.documents ?? []);
+  const [sessions, setSessions] = useState(initialCache?.sessions ?? []);
+  const [activeSessionId, setActiveSessionId] = useState(initialCache?.activeSessionId ?? "");
+  const [activeDocumentId, setActiveDocumentId] = useState(initialCache?.activeDocumentId ?? "");
+  const [messages, setMessages] = useState(
+    () => initialCache?.messagesBySession?.[initialCache?.activeSessionId] ?? [],
+  );
+  const [messageCache, setMessageCache] = useState(initialCache?.messagesBySession ?? {});
   const [question, setQuestion] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isAsking, setIsAsking] = useState(false);
@@ -57,6 +89,36 @@ function App() {
   }, [panelSizes]);
 
   useEffect(() => {
+    try {
+      const trimmedSessions = sessions.filter((s) => s && s.id).slice(0, MAX_CACHED_SESSIONS);
+      const keepIds = new Set(trimmedSessions.map((s) => s.id));
+      const messagesBySession = {};
+      for (const [sid, msgs] of Object.entries(messageCache)) {
+        if (keepIds.has(sid) && Array.isArray(msgs)) messagesBySession[sid] = msgs.slice(-MAX_CACHED_MESSAGES);
+      }
+      // Lưu view đang mở, nhưng không ghi đè lịch sử đã lưu bằng view rỗng
+      // (vd. vừa chuyển session hoặc xoá tài liệu).
+      if (activeSessionId && keepIds.has(activeSessionId)) {
+        if (messages.length || !(activeSessionId in messagesBySession)) {
+          messagesBySession[activeSessionId] = messages.slice(-MAX_CACHED_MESSAGES);
+        }
+      }
+      localStorage.setItem(
+        CHAT_CACHE_KEY,
+        JSON.stringify({
+          sessions: trimmedSessions,
+          messagesBySession,
+          documents: documents.slice(0, 50),
+          activeSessionId,
+          activeDocumentId,
+        }),
+      );
+    } catch {
+      // localStorage đầy hoặc bị chặn: bỏ qua, app vẫn chạy với state memory.
+    }
+  }, [sessions, messageCache, messages, documents, activeSessionId, activeDocumentId]);
+
+  useEffect(() => {
     function closeContextMenus() {
       setHistoryMenu(null);
       setDocumentMenu(null);
@@ -71,22 +133,39 @@ function App() {
   }, []);
 
   async function loadDocuments() {
-    const response = await fetch(`${API_BASE}/api/documents`);
-    if (response.ok) {
+    try {
+      const response = await fetch(`${API_BASE}/api/documents`);
+      if (!response.ok) return;
       const data = await response.json();
-      setDocuments(data);
+      setDocuments((current) => {
+        if (!data.length) return current.length ? current.map((d) => ({ ...d, stale: true })) : current;
+        const known = new Set(data.map((d) => d.id));
+        return [...data, ...current.filter((d) => !known.has(d.id)).map((d) => ({ ...d, stale: true }))];
+      });
       setActiveDocumentId((current) => current || data[0]?.id || "");
+    } catch {
+      // Backend không reachable: giữ bản lưu local.
     }
   }
 
   async function loadSessions() {
-    const response = await fetch(`${API_BASE}/api/chat/sessions`);
-    if (response.ok) {
-      setSessions(await response.json());
+    try {
+      const response = await fetch(`${API_BASE}/api/chat/sessions`);
+      if (!response.ok) return;
+      const data = await response.json();
+      setSessions((current) => {
+        const known = new Set(data.map((s) => s.id));
+        const missing = current.filter((s) => !known.has(s.id)).map((s) => ({ ...s, stale: true }));
+        return [...data, ...missing];
+      });
+    } catch {
+      // Backend không reachable: giữ bản lưu local.
     }
   }
 
   async function createNewChat() {
+    // Cất view hiện tại vào cache trước khi chuyển.
+    setMessageCache((cache) => ({ ...cache, [activeSessionId || "__none"]: messages }));
     const response = await fetch(`${API_BASE}/api/chat/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -97,6 +176,7 @@ function App() {
     });
     if (response.ok) {
       const session = await response.json();
+      setMessageCache((cache) => ({ ...cache, [session.id]: [] }));
       setActiveSessionId(session.id);
       setMessages([]);
       await loadSessions();
@@ -105,15 +185,27 @@ function App() {
 
   async function openSession(sessionId) {
     setHistoryMenu(null);
+    // Cất view hiện tại vào cache trước khi chuyển.
+    setMessageCache((cache) => ({ ...cache, [activeSessionId || "__none"]: messages }));
     setActiveSessionId(sessionId);
-    const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}/messages`);
-    if (response.ok) {
-      const data = await response.json();
-      setMessages(
-        data.length
+    const cached = messageCache[sessionId];
+    setMessages(cached ?? []);
+    try {
+      const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}/messages`);
+      if (response.ok) {
+        const data = await response.json();
+        const mapped = data.length
           ? data.map((message) => ({ role: message.role, content: message.content, sources: [] }))
-          : [],
-      );
+          : [];
+        setMessages(mapped);
+        setMessageCache((cache) => ({ ...cache, [sessionId]: mapped }));
+        setSessions((current) => current.map((s) => (s.id === sessionId ? { ...s, stale: false } : s)));
+      } else if (response.status === 404) {
+        // Backend đã quên session: giữ bản lưu local để xem.
+        setSessions((current) => current.map((s) => (s.id === sessionId ? { ...s, stale: true } : s)));
+      }
+    } catch {
+      // Backend không reachable: giữ bản lưu local.
     }
   }
 
@@ -122,6 +214,10 @@ function App() {
     const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, { method: "DELETE" });
     if (!response.ok) return;
 
+    setMessageCache((cache) => {
+      const { [sessionId]: _removed, ...rest } = cache;
+      return rest;
+    });
     setSessions((current) => current.filter((session) => session.id !== sessionId));
     if (activeSessionId === sessionId) {
       setActiveSessionId("");
@@ -233,9 +329,12 @@ function App() {
     const cleanQuestion = question.trim();
     if (!cleanQuestion || isAsking) return;
 
+    const resumedSessionId = activeSessionId;
+    const cacheKey = resumedSessionId || "__none";
+    const userEntry = { role: "user", content: cleanQuestion, sources: [] };
     setQuestion("");
     setIsAsking(true);
-    setMessages((current) => [...current, { role: "user", content: cleanQuestion, sources: [] }]);
+    setMessages((current) => [...current, userEntry]);
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
@@ -251,19 +350,33 @@ function App() {
       if (!response.ok) {
         throw new Error(data.detail || "Chat thất bại.");
       }
-      if (data.session_id) {
-        setActiveSessionId(data.session_id);
+      const assistantEntry = {
+        role: "assistant",
+        content: data.answer,
+        sources: data.sources || [],
+        toolName: data.tool_name,
+        verification: data.verification,
+      };
+      const returnedId = data.session_id || "";
+      const nextMessages = [...messages, userEntry, assistantEntry];
+      setMessages(nextMessages);
+      if (resumedSessionId && returnedId && returnedId !== resumedSessionId) {
+        // Backend đã quên session cũ nên tự tách id mới: mang lịch sử view
+        // hiện tại sang id mới để cuộc chat tiếp diễn liền mạch.
+        setMessageCache((cache) => {
+          const { [cacheKey]: _dropped, ...rest } = cache;
+          return { ...rest, [returnedId]: nextMessages };
+        });
+        setSessions((current) =>
+          current.map((s) => (s.id === resumedSessionId ? { ...s, id: returnedId, stale: false } : s)),
+        );
+        setActiveSessionId(returnedId);
+      } else {
+        setMessageCache((cache) => ({ ...cache, [returnedId || cacheKey]: nextMessages }));
+        if (returnedId) {
+          setActiveSessionId(returnedId);
+        }
       }
-      setMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: data.answer,
-          sources: data.sources || [],
-          toolName: data.tool_name,
-          verification: data.verification,
-        },
-      ]);
       await loadSessions();
     } catch (error) {
       setMessages((current) => [
@@ -321,6 +434,7 @@ function App() {
                     <strong>{document.filename}</strong>
                     <small>
                       {document.pages} trang · {document.chunks} chunks
+                      {document.stale ? " · cần upload lại" : ""}
                     </small>
                   </span>
                 </button>
@@ -358,7 +472,10 @@ function App() {
                     setHistoryMenu({ sessionId: session.id });
                   }}
                 >
-                  <strong>{session.title}</strong>
+                  <strong>
+                    {session.title}
+                    {session.stale ? " (local)" : ""}
+                  </strong>
                   <small>{new Date(session.updated_at).toLocaleString("vi-VN")}</small>
                 </button>
                 {historyMenu?.sessionId === session.id && (
@@ -393,6 +510,13 @@ function App() {
             Chat mới
           </button>
         </header>
+
+        {sessions.some((s) => s.stale) && (
+          <p className="muted" style={{ padding: "8px 16px 0" }}>
+            Backend đã reset — các mục (local) đang xem từ bản lưu trên trình duyệt. Gửi tin nhắn sẽ tự tạo đoạn chat
+            mới.
+          </p>
+        )}
 
         <div className="messages">
           {messages.map((message, index) => (
