@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Bot, ChevronLeft, FileText, Loader2, MessageSquarePlus, Send, Trash2, Upload } from "lucide-react";
+import { Bot, ChevronLeft, FileText, Loader2, MessageSquarePlus, Moon, Send, Sun, Trash2, Upload } from "lucide-react";
 import katex from "katex";
 import { marked } from "marked";
 import "katex/dist/katex.min.css";
@@ -61,6 +61,11 @@ function App() {
     const saved = localStorage.getItem("rag-panel-sizes");
     return saved ? normalizePanelSizes(JSON.parse(saved)) : { sidebar: 250, preview: 560 };
   });
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem("rag-theme");
+    if (saved === "dark" || saved === "light") return saved;
+    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
   const fileInputRef = useRef(null);
   // Blob URL của file vừa upload trên máy user. Vercel serverless dùng /tmp
   // ephemeral + nhiều instance nên file backend có thể 404 ngay sau upload;
@@ -87,6 +92,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem("rag-panel-sizes", JSON.stringify(panelSizes));
   }, [panelSizes]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("rag-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     try {
@@ -416,6 +426,14 @@ function App() {
           <div>
             <strong>AI Chat Bot</strong>
           </div>
+          <button
+            className="theme-toggle"
+            type="button"
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            title={theme === "dark" ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối"}
+          >
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
         </div>
 
         <button className="primary-button" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
