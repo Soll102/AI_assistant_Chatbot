@@ -211,8 +211,13 @@ function App() {
 
   async function deleteSession(sessionId) {
     setHistoryMenu(null);
-    const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, { method: "DELETE" });
-    if (!response.ok) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, { method: "DELETE" });
+      // Session đã mất trên backend (404 sau reset) thì vẫn xoá bản lưu local.
+      if (!response.ok && response.status !== 404) return;
+    } catch {
+      return;
+    }
 
     setMessageCache((cache) => {
       const { [sessionId]: _removed, ...rest } = cache;
