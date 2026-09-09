@@ -150,11 +150,20 @@ class VectorStore:
         else:
             ranked = ranked[:top_k]
 
-        top_sources = confident_sources(ranked, query)
+        top_sources = ranked
         for source in top_sources:
             nearby_sources = self.sources_near_page(source.document_id, source.page, lookback_pages=12)
             source.preview_page = context_start_page(query, source, [*nearby_sources, *ranked])
-        return dedupe_sources(top_sources)
+        result = dedupe_sources(top_sources)
+        # Không có bằng chứng thật (score 0 và không chứa identifier) thì trả
+        # rỗng để caller báo "không tìm thấy" thay vì gợi ý bừa.
+        if result and max((s.score or 0.0) for s in result) <= 0:
+            identifier_terms = important_identifier_terms(query)
+            if not identifier_terms or not any(
+                has_any_identifier(s.text, identifier_terms) for s in result
+            ):
+                return []
+        return result
 
     def sources_near_page(self, document_id: str, page: int, lookback_pages: int) -> list[SourceChunk]:
         window_start = max(1, page - lookback_pages)

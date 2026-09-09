@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 import re
 
 from app.schemas import DocumentSummary, SourceChunk
-from app.services.vector_store import VectorStore
+from app.services.vector_store import VectorStore, confident_sources
 
 
 @dataclass(frozen=True)
@@ -48,15 +48,16 @@ class RagToolRunner:
             return ToolResult(name=plan.name, sources=[], documents=self.store.list_documents())
 
         if plan.name == "summarize_pdf":
+            # Tóm tắt cần context rộng (tới top_k chunks cho LLM); việc siết
+            # hiển thị còn 1-2 gợi ý do main.py đảm nhiệm.
             return ToolResult(
                 name=plan.name,
                 sources=self.store.search(build_summary_query(plan.query), top_k=top_k, document_id=document_id),
             )
 
-        return ToolResult(
-            name="search_pdf",
-            sources=self.store.search(plan.query, top_k=top_k, document_id=document_id),
-        )
+        # Hỏi đáp chi tiết: siết còn tối đa 1-2 đoạn chắc chắn nhất.
+        pool = self.store.search(plan.query, top_k=top_k, document_id=document_id)
+        return ToolResult(name="search_pdf", sources=confident_sources(pool, plan.query))
 
 
 def build_summary_query(query: str) -> str:

@@ -12,7 +12,7 @@ from app.services.chat_history import ChatHistoryStore
 from app.services.llm_client import ChatState, LLMClient, is_api_error
 from app.services.pdf_processor import PageText, chunk_pages, extract_pdf_pages, render_page_png
 from app.services.rag_tools import RagToolRunner, ToolPlan, fallback_tool_plan, match_document_by_name, quick_tool_plan
-from app.services.vector_store import VectorStore
+from app.services.vector_store import VectorStore, confident_sources
 
 
 def _init_state(target) -> None:
@@ -258,10 +258,12 @@ def chat(
     if config.enable_answer_verification:
         answer, verification = llm.verify_answer(question, answer, sources)
     history.add_message(session.id, "assistant", answer)
+    # Hiển thị tối đa 1-2 gợi ý chắc chắn nhất; LLM vẫn dùng full pool ở trên.
+    shown_sources = confident_sources(sources, question)
     return ChatResponse(
         session_id=session.id,
         answer=answer,
-        sources=sources,
+        sources=shown_sources,
         tool_name=tool_result.name,
         verification=verification,
     )

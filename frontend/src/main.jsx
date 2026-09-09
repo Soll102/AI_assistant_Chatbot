@@ -171,7 +171,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: "Chat mới",
-        document_id: activeDocumentId || null,
+        document_id: activeDocument && !activeDocument.stale ? activeDocument.id : null,
       }),
     });
     if (response.ok) {
@@ -227,8 +227,13 @@ function App() {
 
   async function deleteDocument(documentId) {
     setDocumentMenu(null);
-    const response = await fetch(`${API_BASE}/api/documents/${documentId}`, { method: "DELETE" });
-    if (!response.ok) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/${documentId}`, { method: "DELETE" });
+      // Backend đã quên file (404 sau reset) thì vẫn xoá bản lưu local.
+      if (!response.ok && response.status !== 404) return;
+    } catch {
+      return;
+    }
 
     setLocalPdfUrls((current) => {
       if (current[documentId]) URL.revokeObjectURL(current[documentId].split("#")[0]);
@@ -331,6 +336,9 @@ function App() {
 
     const resumedSessionId = activeSessionId;
     const cacheKey = resumedSessionId || "__none";
+    // Tài liệu stale (backend đã quên sau reset) thì không lọc theo id ma —
+    // tìm trên toàn bộ docs backend đang có để tăng cơ hội trúng.
+    const effectiveDocumentId = activeDocument && !activeDocument.stale ? activeDocument.id : null;
     const userEntry = { role: "user", content: cleanQuestion, sources: [] };
     setQuestion("");
     setIsAsking(true);
@@ -342,7 +350,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: cleanQuestion,
-          document_id: activeDocumentId || null,
+          document_id: effectiveDocumentId,
           session_id: activeSessionId || null,
         }),
       });
