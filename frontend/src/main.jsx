@@ -8,6 +8,8 @@ import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const MAX_QUESTION_LENGTH = 500;
+// Khớp backend config.max_context_chunks mặc định (schemas.documents_skipped).
+const MAX_CONTEXT_CHUNKS = 24;
 const CHAT_CACHE_KEY = "rag-chat-cache-v1";
 const MAX_CACHED_SESSIONS = 30;
 const MAX_CACHED_MESSAGES = 200;
@@ -31,6 +33,10 @@ function loadChatCache() {
       documents: Array.isArray(parsed.documents) ? parsed.documents : [],
       activeSessionId: typeof parsed.activeSessionId === "string" ? parsed.activeSessionId : "",
       activeDocumentId: typeof parsed.activeDocumentId === "string" ? parsed.activeDocumentId : "",
+      // null means "chưa chọn gì" -> mặc định là tất cả tài liệu.
+      selectedDocumentIds: Array.isArray(parsed.selectedDocumentIds)
+        ? parsed.selectedDocumentIds
+        : null,
     };
   } catch {
     return null;
@@ -44,6 +50,16 @@ function App() {
   const [sessions, setSessions] = useState(initialCache?.sessions ?? []);
   const [activeSessionId, setActiveSessionId] = useState(initialCache?.activeSessionId ?? "");
   const [activeDocumentId, setActiveDocumentId] = useState(initialCache?.activeDocumentId ?? "");
+  // Phạm vi chat. null = chưa chọn -> hiểu là tất cả tài liệu khả dụng.
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState(
+    initialCache?.selectedDocumentIds ?? null,
+  );
+  const [uploadNote, setUploadNote] = useState("");
+  // PDFs sitting on the backend disk that the retrieval index does not know
+  // about (e.g. uploaded before the index format changed). Surfaced as a
+  // one-click repair instead of leaving the library silently incomplete.
+  const [unindexedIds, setUnindexedIds] = useState([]);
+  const [isReindexing, setIsReindexing] = useState(false);
   const [messages, setMessages] = useState(
     () => initialCache?.messagesBySession?.[initialCache?.activeSessionId] ?? [],
   );
@@ -58,8 +74,13 @@ function App() {
   const [documentMenu, setDocumentMenu] = useState(null);
   const [previewMenu, setPreviewMenu] = useState(null);
   const [panelSizes, setPanelSizes] = useState(() => {
-    const saved = localStorage.getItem("rag-panel-sizes");
-    return saved ? normalizePanelSizes(JSON.parse(saved)) : { sidebar: 250, preview: 560 };
+    try {
+      const saved = localStorage.getItem("rag-panel-sizes");
+      // JSON corrupt trước đây throw trong render -> trắng app.
+      return saved ? normalizePanelSizes(JSON.parse(saved)) : { sidebar: 250, preview: 560 };
+    } catch {
+      return { sidebar: 250, preview: 560 };
+    }
   });
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("rag-theme");
@@ -77,6 +98,19 @@ function App() {
     [documents, activeDocumentId],
   );
 
+  // Tài liệu backend còn giữ (bỏ qua bản local đã stale sau khi backend reset).
+  const selectableDocuments = useMemo(() => documents.filter((item) => !item.stale), [documents]);
+
+  // Phạm vi chat gửi lên backend. null/[] ở backend nghĩa là "tất cả", nên ở
+  // đây phải luôn quy về danh sách id cụ thể để người dùng kiểm soát được.
+  const effectiveSelection = useMemo(() => {
+    const known = new Set(selectableDocuments.map((item) => item.id));
+    if (selectedDocumentIds === null) return selectableDocuments.map((item) => item.id);
+    return selectedDocumentIds.filter((id) => known.has(id));
+  }, [selectedDocumentIds, selectableDocuments]);
+
+  const selectionIsEmpty = selectableDocuments.length > 0 && effectiveSelection.length === 0;
+
   const localPdfUrl = activeDocumentId ? localPdfUrls[activeDocumentId] : "";
   const pdfUrl = localPdfUrl
     ? `${localPdfUrl}#page=${previewPage}&view=FitH`
@@ -87,6 +121,7 @@ function App() {
   useEffect(() => {
     loadDocuments();
     loadSessions();
+    loadIndexStatus();
   }, []);
 
   useEffect(() => {
@@ -121,12 +156,13 @@ function App() {
           documents: documents.slice(0, 50),
           activeSessionId,
           activeDocumentId,
+          selectedDocumentIds,
         }),
       );
     } catch {
       // localStorage đầy hoặc bị chặn: bỏ qua, app vẫn chạy với state memory.
     }
-  }, [sessions, messageCache, messages, documents, activeSessionId, activeDocumentId]);
+  }, [sessions, messageCache, messages, documents, activeSessionId, activeDocumentId, selectedDocumentIds]);
 
   useEffect(() => {
     function closeContextMenus() {
@@ -155,6 +191,47 @@ function App() {
       setActiveDocumentId((current) => current || data[0]?.id || "");
     } catch {
       // Backend không reachable: giữ bản lưu local.
+    }
+  }
+
+  async function loadIndexStatus() {
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/status`);
+      if (!response.ok) return;
+      const data = await response.json();
+      setUnindexedIds(Array.isArray(data.unindexed) ? data.unindexed : []);
+    } catch {
+      // Backend không reachable: giữ nguyên trạng thái cũ.
+    }
+  }
+
+  async function reindexDocuments() {
+    setIsReindexing(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/reindex`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Index lại thất bại.");
+      await loadDocuments();
+      await loadIndexStatus();
+      const lines = (data.indexed || []).map(
+        (item) => `- **${item.filename}**: ${item.pages} trang, ${item.chunks} chunks`,
+      );
+      const errorLines = (data.errors || []).map((item) => `- ${item}`);
+      const parts = [];
+      if (lines.length) parts.push(`Đã index ${lines.length} tài liệu còn thiếu:\n${lines.join("\n")}`);
+      else parts.push("Không còn tài liệu nào cần index.");
+      if (errorLines.length) parts.push(`Không index được:\n${errorLines.join("\n")}`);
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: parts.join("\n\n"), sources: [] },
+      ]);
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: `Index lại lỗi: ${error.message}`, sources: [] },
+      ]);
+    } finally {
+      setIsReindexing(false);
     }
   }
 
@@ -204,8 +281,21 @@ function App() {
       const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}/messages`);
       if (response.ok) {
         const data = await response.json();
+        // Backend ChatMessage không có sources (schema): giữ citations từ
+        // cache local theo index khi nội dung trùng, thay vì vứt hết.
+        const previous = messageCache[sessionId] ?? [];
         const mapped = data.length
-          ? data.map((message) => ({ role: message.role, content: message.content, sources: [] }))
+          ? data.map((message, index) => {
+              const kept = previous[index];
+              const same =
+                kept && kept.role === message.role && kept.content === message.content;
+              return {
+                role: message.role,
+                content: message.content,
+                sources: same && Array.isArray(kept.sources) ? kept.sources : [],
+                documentsUsed: same && Array.isArray(kept.documentsUsed) ? kept.documentsUsed : [],
+              };
+            })
           : [];
         setMessages(mapped);
         setMessageCache((cache) => ({ ...cache, [sessionId]: mapped }));
@@ -224,9 +314,12 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, { method: "DELETE" });
       // Session đã mất trên backend (404 sau reset) thì vẫn xoá bản lưu local.
-      if (!response.ok && response.status !== 404) return;
+      // Backend unreachable cũng dọn local để user không kẹt entry chết.
+      if (!response.ok && response.status !== 404) {
+        // vẫn tiếp tục xoá local bên dưới
+      }
     } catch {
-      return;
+      // vẫn tiếp tục xoá local bên dưới thay vì return sớm
     }
 
     setMessageCache((cache) => {
@@ -244,10 +337,17 @@ function App() {
     setDocumentMenu(null);
     try {
       const response = await fetch(`${API_BASE}/api/documents/${documentId}`, { method: "DELETE" });
-      // Backend đã quên file (404 sau reset) thì vẫn xoá bản lưu local.
-      if (!response.ok && response.status !== 404) return;
+      // Backend đã quên file (404 sau reset) hay unreachable thì vẫn xoá bản
+      // lưu local để user không kẹt entry chết.
+      if (!response.ok && response.status !== 404 && response.status !== 409) {
+        // vẫn tiếp tục xoá local bên dưới
+      }
+      if (response.status === 409) {
+        const data = await response.json().catch(() => ({}));
+        setUploadNote(data.detail || "File đang bị khoá, đóng file và thử lại.");
+      }
     } catch {
-      return;
+      // vẫn tiếp tục xoá local bên dưới
     }
 
     setLocalPdfUrls((current) => {
@@ -256,15 +356,18 @@ function App() {
       return rest;
     });
 
-    setDocuments((current) => {
-      const nextDocuments = current.filter((document) => document.id !== documentId);
-      if (activeDocumentId === documentId) {
-        setActiveDocumentId(nextDocuments[0]?.id || "");
-        setPreviewPage(1);
-        setMessages([]);
-      }
-      return nextDocuments;
-    });
+    // Không gọi setState trong updater (StrictMode double-invoke dễ sinh bug):
+    // tính next từ state hiện tại rồi set từng phần riêng.
+    const nextDocuments = documents.filter((document) => document.id !== documentId);
+    setDocuments(nextDocuments);
+    setSelectedDocumentIds((current) =>
+      current === null ? null : current.filter((id) => id !== documentId),
+    );
+    if (activeDocumentId === documentId) {
+      setActiveDocumentId(nextDocuments[0]?.id || "");
+      setPreviewPage(1);
+      setMessages([]);
+    }
   }
 
   function startResize(handle) {
@@ -301,16 +404,44 @@ function App() {
     };
   }
 
-  async function uploadPdf(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  async function uploadPdfs(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    // Guard client-side khớp backend (MAX_BATCH_FILES=20, MAX_UPLOAD_MB=50):
+    // chặn sớm thay vì upload hàng trăm MB rồi mới 400/413.
+    const MAX_BATCH_FILES = 20;
+    const MAX_UPLOAD_MB = 50;
+    if (files.length > MAX_BATCH_FILES) {
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: `Mỗi lần chỉ upload tối đa ${MAX_BATCH_FILES} file.`, sources: [] },
+      ]);
+      event.target.value = "";
+      return;
+    }
+    const oversized = files.filter((file) => file.size > MAX_UPLOAD_MB * 1024 * 1024);
+    if (oversized.length) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: `File vượt quá ${MAX_UPLOAD_MB}MB: ${oversized.map((f) => f.name).join(", ")}.`,
+          sources: [],
+        },
+      ]);
+      event.target.value = "";
+      return;
+    }
 
     setIsUploading(true);
+    setUploadNote(files.length > 1 ? `Đang index ${files.length} file...` : "Đang index...");
     const formData = new FormData();
-    formData.append("file", file);
+    for (const file of files) {
+      formData.append("files", file);
+    }
 
     try {
-      const response = await fetch(`${API_BASE}/api/documents`, {
+      const response = await fetch(`${API_BASE}/api/documents/batch`, {
         method: "POST",
         body: formData,
       });
@@ -318,22 +449,58 @@ function App() {
       if (!response.ok) {
         throw new Error(data.detail || "Upload thất bại.");
       }
-      setDocuments((current) => [data, ...current.filter((item) => item.id !== data.id)]);
-      setActiveDocumentId(data.id);
-      setPreviewPage(1);
+      const summaries = Array.isArray(data) ? data : [data];
+      const batchErrors = response.headers.get("X-Batch-Errors") || "";
+
       // Giữ blob URL để preview local, không phụ thuộc file trên backend.
-      const blobUrl = URL.createObjectURL(file);
-      setLocalPdfUrls((current) => ({ ...current, [data.id]: blobUrl }));
+      // Ghép theo tên file vì backend bỏ qua file lỗi nên thứ tự có thể lệch.
+      const filesByName = new Map();
+      for (const file of files) {
+        if (!filesByName.has(file.name)) filesByName.set(file.name, file);
+      }
+      setLocalPdfUrls((current) => {
+        const next = { ...current };
+        for (const summary of summaries) {
+          const file = filesByName.get(summary.filename);
+          if (file && !next[summary.id]) next[summary.id] = URL.createObjectURL(file);
+        }
+        return next;
+      });
+
+      setDocuments((current) => [
+        ...summaries,
+        ...current.filter((item) => !summaries.some((summary) => summary.id === item.id)),
+      ]);
+      setSelectedDocumentIds((current) =>
+        current === null
+          ? null
+          : [...new Set([...current, ...summaries.map((summary) => summary.id)])],
+      );
+      setActiveDocumentId(summaries[0]?.id ?? "");
+      setPreviewPage(1);
+
+      const failed = files.length - summaries.length;
+      const lines = summaries.map(
+        (summary) => `- **${summary.filename}**: ${summary.pages} trang, ${summary.chunks} chunks`,
+      );
+      const warning =
+        failed > 0
+          ? `\n\n${failed} file không index được.${batchErrors ? ` Chi tiết: ${batchErrors}` : " (xem console để biết chi tiết)."}` 
+          : "";
       setMessages((current) => [
         ...current,
         {
           role: "assistant",
-          content: `Đã index **${data.filename}**: ${data.pages} trang, ${data.chunks} chunks. Bạn có thể hỏi về tài liệu này rồi.`,
+          content: `Đã index ${summaries.length}/${files.length} file:\n${lines.join("\n")}${warning}`,
           sources: [],
         },
       ]);
+      if (failed > 0) {
+        setUploadNote(`${summaries.length}/${files.length} file được index.`);
+      }
       await loadSessions();
     } catch (error) {
+      setUploadNote("");
       setMessages((current) => [
         ...current,
         { role: "assistant", content: `Upload lỗi: ${error.message}`, sources: [] },
@@ -341,19 +508,39 @@ function App() {
     } finally {
       setIsUploading(false);
       event.target.value = "";
+      window.setTimeout(() => setUploadNote(""), 4000);
     }
+  }
+
+  function toggleDocumentSelection(documentId) {
+    setSelectedDocumentIds((current) => {
+      const base = current === null ? selectableDocuments.map((item) => item.id) : current;
+      return base.includes(documentId)
+        ? base.filter((id) => id !== documentId)
+        : [...base, documentId];
+    });
+  }
+
+  function selectAllDocuments() {
+    setSelectedDocumentIds(selectableDocuments.map((item) => item.id));
+  }
+
+  function clearDocumentSelection() {
+    setSelectedDocumentIds([]);
   }
 
   async function askQuestion(event) {
     event.preventDefault();
     const cleanQuestion = question.trim();
     if (!cleanQuestion || isAsking) return;
+    if (selectionIsEmpty) return;
 
     const resumedSessionId = activeSessionId;
     const cacheKey = resumedSessionId || "__none";
-    // Tài liệu stale (backend đã quên sau reset) thì không lọc theo id ma —
-    // tìm trên toàn bộ docs backend đang có để tăng cơ hội trúng.
-    const effectiveDocumentId = activeDocument && !activeDocument.stale ? activeDocument.id : null;
+    // Tài liệu stale (backend đã quên sau reset) đã bị loại khỏi effectiveSelection.
+    // Có tài liệu nhưng chưa chọn gì thì chặn ở trên, không gửi mảng rỗng —
+    // backend hiểu [] là "tất cả".
+    const scopeIds = selectableDocuments.length ? effectiveSelection : null;
     const userEntry = { role: "user", content: cleanQuestion, sources: [] };
     setQuestion("");
     setIsAsking(true);
@@ -365,7 +552,8 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: cleanQuestion,
-          document_id: effectiveDocumentId,
+          document_id: null,
+          document_ids: scopeIds,
           session_id: activeSessionId || null,
         }),
       });
@@ -379,10 +567,18 @@ function App() {
         sources: data.sources || [],
         toolName: data.tool_name,
         verification: data.verification,
+        documentsUsed: data.documents_used || [],
+        documentsSkipped: data.documents_skipped || [],
+        queryRewritten: Boolean(data.query_rewritten),
       };
       const returnedId = data.session_id || "";
-      const nextMessages = [...messages, userEntry, assistantEntry];
-      setMessages(nextMessages);
+      // Dùng functional update để tránh stale closure khi openSession/reindex
+      // xen vào giữa await (trước đây [...messages, ...] mất tin).
+      let nextMessages = [];
+      setMessages((current) => {
+        nextMessages = [...current, userEntry, assistantEntry];
+        return nextMessages;
+      });
       if (resumedSessionId && returnedId && returnedId !== resumedSessionId) {
         // Backend đã quên session cũ nên tự tách id mới: mang lịch sử view
         // hiện tại sang id mới để cuộc chat tiếp diễn liền mạch.
@@ -438,53 +634,98 @@ function App() {
 
         <button className="primary-button" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
           {isUploading ? <Loader2 className="spin" size={18} /> : <Upload size={18} />}
-          {isUploading ? "Đang index..." : "Upload PDF"}
+          {isUploading ? uploadNote || "Đang index..." : "Upload PDF"}
         </button>
-        <input ref={fileInputRef} type="file" accept="application/pdf" hidden onChange={uploadPdf} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf"
+          multiple
+          hidden
+          onChange={uploadPdfs}
+        />
+        {uploadNote && !isUploading && <p className="muted upload-note">{uploadNote}</p>}
 
         <section className="document-list">
-          <h2>Tài liệu</h2>
+          <div className="document-list-header">
+            <h2>Tài liệu</h2>
+            {selectableDocuments.length > 0 && (
+              <span className="selection-count">
+                {effectiveSelection.length}/{selectableDocuments.length} trong phạm vi
+              </span>
+            )}
+          </div>
+          {selectableDocuments.length > 1 && (
+            <div className="selection-actions">
+              <button type="button" onClick={selectAllDocuments}>Chọn tất cả</button>
+              <button type="button" onClick={clearDocumentSelection}>Bỏ chọn</button>
+            </div>
+          )}
+          {unindexedIds.length > 0 && (
+            <div className="index-warning">
+              <p>
+                {unindexedIds.length} PDF có trên đĩa nhưng chưa được index — chúng sẽ không
+                xuất hiện trong câu trả lời.
+              </p>
+              <button type="button" onClick={reindexDocuments} disabled={isReindexing}>
+                {isReindexing ? "Đang index..." : `Index ${unindexedIds.length} file còn thiếu`}
+              </button>
+            </div>
+          )}
           {documents.length === 0 ? (
             <p className="muted">Chưa có PDF nào.</p>
           ) : (
-            documents.map((document) => (
-              <div className="document-row" key={document.id}>
-                <button
-                  className={`document-item ${document.id === activeDocumentId ? "active" : ""}`}
-                  onClick={() => {
-                    setActiveDocumentId(document.id);
-                    setPreviewPage(1);
-                  }}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setDocumentMenu({ documentId: document.id });
-                  }}
-                >
-                  <FileText size={18} />
-                  <span>
-                    <strong>{document.filename}</strong>
-                    <small>
-                      {document.pages} trang · {document.chunks} chunks
-                      {document.stale ? " · cần upload lại" : ""}
-                    </small>
-                  </span>
-                </button>
-                {documentMenu?.documentId === document.id && (
+            documents.map((document) => {
+              const selected = !document.stale && effectiveSelection.includes(document.id);
+              return (
+                <div className="document-row" key={document.id}>
+                  <label className="document-check" title="Đưa tài liệu này vào phạm vi trả lời">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={document.stale}
+                      onChange={() => toggleDocumentSelection(document.id)}
+                    />
+                  </label>
                   <button
-                    className="document-delete"
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      deleteDocument(document.id);
+                    className={`document-item ${document.id === activeDocumentId ? "active" : ""} ${
+                      selected ? "in-scope" : ""
+                    }`}
+                    onClick={() => {
+                      setActiveDocumentId(document.id);
+                      setPreviewPage(1);
                     }}
-                    title="Xoá PDF"
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setDocumentMenu({ documentId: document.id });
+                    }}
                   >
-                    <Trash2 size={14} />
-                    Xoá
+                    <FileText size={18} />
+                    <span>
+                      <strong>{document.filename}</strong>
+                      <small>
+                        {document.pages} trang · {document.chunks} chunks
+                        {document.stale ? " · cần upload lại" : ""}
+                      </small>
+                    </span>
                   </button>
-                )}
-              </div>
-            ))
+                  {documentMenu?.documentId === document.id && (
+                    <button
+                      className="document-delete"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        deleteDocument(document.id);
+                      }}
+                      title="Xoá PDF"
+                    >
+                      <Trash2 size={14} />
+                      Xoá
+                    </button>
+                  )}
+                </div>
+              );
+            })
           )}
         </section>
 
@@ -558,9 +799,27 @@ function App() {
               />
               {(message.toolName || message.verification) && (
                 <div className="message-meta">
-                  {message.toolName && <span>Tool: {message.toolName}</span>}
-                  {message.verification && <span>Verification: {message.verification}</span>}
+                  {message.toolName && <span>Cách tìm: {formatToolName(message.toolName)}</span>}
+                  {message.verification && (
+                    <span>Đối chiếu: {formatVerification(message.verification)}</span>
+                  )}
+                  {message.documentsUsed?.length > 0 && (
+                    <span>Dùng {message.documentsUsed.length} tài liệu</span>
+                  )}
                 </div>
+              )}
+              {message.queryRewritten && (
+                <p className="message-warning">
+                  Câu hỏi nối tiếp không khớp từ khoá nào nên đã được mở rộng bằng lượt hỏi trước.
+                </p>
+              )}
+              {message.documentsSkipped?.length > 0 && (
+                <p className="message-warning">
+                  {message.documentsSkipped.length} tài liệu không lọt vào ngữ cảnh do giới hạn
+                  ngân sách (tối đa {MAX_CONTEXT_CHUNKS} đoạn).
+                  {formatSkippedDocs(message.documentsSkipped, documents)} Câu trả lời có thể chưa
+                  bao quát hết.
+                </p>
               )}
               {message.sources?.length > 0 && (
                 <SourceList
@@ -593,14 +852,22 @@ function App() {
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={activeDocument ? "Hỏi về PDF này..." : "Upload hoặc chọn PDF trước..."}
+            placeholder={
+              selectableDocuments.length === 0
+                ? "Upload hoặc chọn PDF trước..."
+                : selectionIsEmpty
+                  ? "Chọn ít nhất một tài liệu để hỏi..."
+                  : effectiveSelection.length === 1
+                    ? "Hỏi về tài liệu đang chọn..."
+                    : `Hỏi trên ${effectiveSelection.length} tài liệu...`
+            }
             maxLength={MAX_QUESTION_LENGTH}
             rows={1}
           />
           <span className={`char-counter ${question.length >= MAX_QUESTION_LENGTH ? "limit" : ""}`}>
             {question.length}/{MAX_QUESTION_LENGTH}
           </span>
-          <button type="submit" disabled={!question.trim() || isAsking}>
+          <button type="submit" disabled={!question.trim() || isAsking || selectionIsEmpty}>
             <Send size={18} />
           </button>
         </form>
@@ -671,14 +938,55 @@ function clamp(value, min, max) {
 }
 
 function normalizePanelSizes(sizes) {
+  const fallbackWidth = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const sizesObj = sizes && typeof sizes === "object" ? sizes : {};
   return {
-    sidebar: clamp(Number(sizes.sidebar) || 250, 200, 420),
-    preview: clamp(Number(sizes.preview) || 560, 260, Math.max(360, window.innerWidth - 540)),
+    sidebar: clamp(Number(sizesObj.sidebar) || 250, 200, 420),
+    preview: clamp(Number(sizesObj.preview) || 560, 260, Math.max(360, fallbackWidth - 540)),
   };
 }
 
+function formatToolName(name) {
+  const labels = {
+    search_pdf: "tìm trong tài liệu",
+    summarize_pdf: "tóm tắt",
+    compare_pdfs: "so sánh nhiều tài liệu",
+    list_pdfs: "liệt kê tài liệu",
+  };
+  return labels[name] || name;
+}
+
+function formatVerification(value) {
+  if (!value) return "";
+  if (value.startsWith("supported")) return "câu trả lời khớp tài liệu";
+  if (value.startsWith("revised")) return "đã sửa cho khớp tài liệu";
+  if (value.startsWith("no_evidence")) return "tài liệu không đủ thông tin";
+  if (value === "skipped" || value === "disabled" || value === "unverified")
+    return "chưa đối chiếu";
+  return value;
+}
+
+function formatSkippedDocs(ids, documents) {
+  if (!Array.isArray(ids) || !ids.length) return "";
+  const names = ids.map((id) => {
+    const found = (documents || []).find((doc) => doc.id === id);
+    return found ? found.filename : id.slice(0, 8);
+  });
+  return ` (${names.join(", ")})`;
+}
+
+function sanitizeRenderedHtml(html) {
+  // marked không sanitize: tên file/answer LLM chứa <script>/<iframe> hoặc
+  // on*=... sẽ thành Stored XSS. Lọc tối thiểu mà không cần thêm dep.
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<(iframe|object|embed|form|input|button|select|textarea|link|meta|base|style)[\s\S]*?(?:<\/\1\s*>|\/>|>)/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/(href|src|xlink:href)\s*=\s*("|')\s*javascript:[^"']*(")/gi, '$1=$2#$3');
+}
+
 function renderMarkdown(content) {
-  return marked.parse(formatMath(content));
+  return sanitizeRenderedHtml(marked.parse(formatMath(content || "")));
 }
 
 function formatMath(content) {
@@ -732,15 +1040,21 @@ function escapeHtml(value) {
 }
 
 function SourceList({ sources, onOpenSource }) {
-  const visibleSources = sources.slice(0, 3);
-
+  // Backend đã giới hạn số nguồn (1-2 cho câu hỏi thường, tối đa 4 cho so
+  // sánh), nên hiển thị hết thay vì tự cắt thêm.
   return (
     <div className="sources">
       <strong>Đoạn liên quan</strong>
-      {visibleSources.map((source, index) => (
-        <details key={`${source.document_id}-${source.page}-${index}`}>
+      {sources.map((source, index) => (
+        <details key={`${source.document_id}-${source.preview_page || source.page}-${index}`}>
           <summary>
-            <span>Đoạn {index + 1}</span>
+            <span>
+              Đoạn {index + 1}
+              <small className="source-origin">
+                {" "}
+                {source.filename} · trang {source.preview_page || source.page}
+              </small>
+            </span>
             <button type="button" onClick={() => onOpenSource(source)}>
               Mở trong preview
             </button>

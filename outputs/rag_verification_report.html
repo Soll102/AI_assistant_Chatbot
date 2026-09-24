@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiểm chứng RAG Chatbot — độ chính xác &amp; đọc nhiều file</title>
+<style>
+  :root {
+    --bg: #0e131c;
+    --panel: #18202e;
+    --panel-2: #151c28;
+    --border: #2a3446;
+    --border-strong: #3a465c;
+    --text: #e6ebf3;
+    --text-muted: #98a2b3;
+    --text-soft: #c2cad6;
+    --accent: #3b82f6;
+    --accent-soft: #16294d;
+    --accent-border: #2f5288;
+    --accent-text: #93c5fd;
+    --good: #34d399;
+    --good-soft: #10312a;
+    --warn: #fbbf24;
+    --warn-soft: #33280c;
+    --bad: #f87171;
+    --bad-soft: #2a1518;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 28px; margin-bottom: 40px; }
+  .eyebrow { color: var(--accent-text); font-size: 12.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; margin: 0 0 12px; }
+  h1 { font-size: 31px; line-height: 1.22; margin: 0 0 14px; letter-spacing: -.015em; }
+  .sub { color: var(--text-muted); margin: 0; font-size: 15px; }
+  h2 { font-size: 21px; margin: 52px 0 16px; letter-spacing: -.01em; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 16px; margin: 30px 0 10px; color: var(--text); }
+  p { margin: 0 0 14px; color: var(--text-soft); }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; color: var(--text-soft); }
+  li { margin-bottom: 7px; }
+  code {
+    background: #111827; border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    color: #d7e3f4;
+  }
+  pre {
+    background: #111827; border: 1px solid var(--border); border-radius: 9px;
+    padding: 16px 18px; overflow-x: auto; font-size: 13px; line-height: 1.6;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    color: #d7e3f4; margin: 0 0 18px;
+  }
+  pre .k { color: #93c5fd; }
+  pre .c { color: #6b7c93; }
+  pre .g { color: #6ee7b7; }
+  pre .b { color: #f87171; }
+  pre .r { color: #fca5a5; }
+  pre .y { color: #fcd34d; }
+  .verdict {
+    background: var(--panel); border: 1px solid var(--accent-border);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+    padding: 20px 22px; margin: 0 0 34px;
+  }
+  .verdict p:last-child { margin-bottom: 0; }
+  .verdict strong { color: var(--text); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); margin: 0 0 22px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 15px 17px; }
+  .stat .v { font-size: 25px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
+  .stat .l { color: var(--text-muted); font-size: 12px; margin-top: 5px; line-height: 1.4; }
+  .stat.good .v { color: var(--good); }
+  .stat.warn .v { color: var(--warn); }
+  .stat.bad  .v { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; margin: 0 0 20px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 600; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
+  td { color: var(--text-soft); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  tbody tr:hover { background: var(--panel-2); }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; }
+  .pill.fixed { background: var(--good-soft); color: var(--good); border: 1px solid #1d5347; }
+  .pill.open  { background: var(--warn-soft); color: var(--warn); border: 1px solid #5c4715; }
+  .pill.info  { background: var(--accent-soft); color: var(--accent-text); border: 1px solid var(--accent-border); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 11px; padding: 20px 22px; margin: 0 0 18px; }
+  .card h3 { margin-top: 0; }
+  .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+  .callout { border-radius: 9px; padding: 15px 18px; margin: 0 0 18px; border: 1px solid; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout.bad  { background: var(--bad-soft);  border-color: #5e2a2a; }
+  .callout.warn { background: var(--warn-soft); border-color: #5c4715; }
+  .callout.good { background: var(--good-soft); border-color: #1d5347; }
+  .callout .t { font-weight: 650; color: var(--text); display: block; margin-bottom: 6px; font-size: 14px; }
+  .bar-row { display: grid; grid-template-columns: 108px 1fr 58px; align-items: center; gap: 12px; margin-bottom: 9px; font-size: 13px; }
+  .bar-track { height: 9px; background: #111827; border-radius: 5px; overflow: hidden; border: 1px solid var(--border); }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-row .name { color: var(--text-muted); }
+  .bar-row .val { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text-soft); }
+  .note { color: var(--text-muted); font-size: 13px; font-style: italic; margin-top: -6px; }
+  footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Báo cáo kiểm chứng</p>
+  <h1>Độ chính xác của RAG Chatbot &amp; khả năng đọc nhiều file</h1>
+  <p class="sub">Đo bằng benchmark tiếng Việt có nhãn, sửa các lỗi đo được, và kiểm tra trên thư viện PDF thật của chính dự án (78&nbsp;MB, 4 tài liệu, 1&nbsp;514 trang).</p>
+</header>
+
+<div class="verdict">
+  <p><strong>Kết luận:</strong> Hệ thống đã đạt các mục tiêu về tốc độ, độ nhẹ và độ phủ đa tài liệu. Truy vấn ở mức <strong>1&nbsp;ms</strong>, không cần model embedding, trả lời đúng tài liệu ở vị trí đầu <strong>95,7&nbsp;%</strong> số câu hỏi.</p>
+  <p><strong>Về "không nói linh tinh": đạt 6/6 câu ngoài phạm vi đều bị từ chối đúng</strong> khi đo trên câu trả lời cuối cùng, với <strong>4/26</strong> câu trả lời được bị từ chối nhầm (15,4&nbsp;%) — và 4 ca đó tập trung đúng vào dạng câu hỏi cần suy luận, không phải tra cứu. Con số 33&nbsp;% mà tôi báo cáo ban đầu là <em>sai tầng</em> — nó đo cổng truy hồi, không đo trợ lý. Mục <a href="#refusal" style="color:var(--accent-text)">Từ chối</a> giải thích sự khác biệt, hai lần tôi đo sai, và các giới hạn còn lại.</p>
+</div>
+
+<h2>1. Đã kiểm chứng bằng gì</h2>
+
+<p>Thay vì tự đánh giá bằng cảm nhận, dự án giờ có một bộ benchmark chạy offline, tái lập được:</p>
+
+<ul>
+  <li><code>tests/eval_corpus.py</code> — 6 tài liệu nghiệp vụ tiếng Việt <strong>cố tình dùng chung từ vựng</strong> (quy trình tuyển dụng, nghỉ phép, hoàn tiền, bảo mật, hướng dẫn phần mềm, sự cố kỹ thuật). Đây là điểm mấu chốt: nếu các tài liệu khác nhau hoàn toàn thì mọi bộ truy hồi đều đạt điểm cao và phép đo vô nghĩa.</li>
+  <li><code>tests/eval_retrieval.py</code> — 32 câu hỏi có nhãn, chia theo dạng: <code>factual</code> (10), <code>identifier</code> (4), <code>unaccented</code> (4), <code>paraphrase</code> (5), <code>compare</code> (3), <code>refusal</code> (6).</li>
+</ul>
+
+<pre><span class="c">cd backend</span>
+.\.venv\Scripts\python.exe -m tests.eval_retrieval                 <span class="c"># báo cáo đầy đủ</span>
+.\.venv\Scripts\python.exe -m tests.eval_retrieval --sweep-coverage <span class="c"># dò ngưỡng</span>
+.\.venv\Scripts\python.exe -m tests.eval_retrieval --scale-bench    <span class="c"># quy mô vs độ trễ</span>
+.\.venv\Scripts\python.exe -m tests.eval_retrieval --strict         <span class="c"># exit 1 nếu có câu sai</span></pre>
+
+<h2>2. Kết quả đo được</h2>
+
+<div class="grid">
+  <div class="stat good"><div class="v">95,7&nbsp;%</div><div class="l">Đúng tài liệu ở vị trí đầu (top-1)</div></div>
+  <div class="stat good"><div class="v">100&nbsp;%</div><div class="l">Recall@k — không bỏ sót tài liệu đúng</div></div>
+  <div class="stat good"><div class="v">0,978</div><div class="l">MRR — thứ hạng trung bình</div></div>
+  <div class="stat good"><div class="v">100&nbsp;%</div><div class="l">Độ phủ khi so sánh nhiều tài liệu</div></div>
+  <div class="stat good"><div class="v">1,0&nbsp;ms</div><div class="l">Độ trễ p50 (p95: 2,1&nbsp;ms)</div></div>
+  <div class="stat good"><div class="v">100&nbsp;%</div><div class="l">Từ chối đúng câu ngoài phạm vi (end-to-end)</div></div>
+  <div class="stat warn"><div class="v">15,4&nbsp;%</div><div class="l">Từ chối nhầm câu trả lời được (4/26)</div></div>
+</div>
+
+<p class="note">Chỉ số "từ chối" ở đây đo trên <strong>câu trả lời cuối cùng</strong>, không phải trên cổng truy hồi. Hai tầng khác nhau, xem mục 4.</p>
+
+<h3>Theo dạng câu hỏi</h3>
+
+<div class="bar-row"><span class="name">factual</span><div class="bar-track"><div class="bar-fill" style="width:100%;background:#34d399"></div></div><span class="val">1,000</span></div>
+<div class="bar-row"><span class="name">identifier</span><div class="bar-track"><div class="bar-fill" style="width:100%;background:#34d399"></div></div><span class="val">1,000</span></div>
+<div class="bar-row"><span class="name">unaccented</span><div class="bar-track"><div class="bar-fill" style="width:100%;background:#34d399"></div></div><span class="val">1,000</span></div>
+<div class="bar-row"><span class="name">compare</span><div class="bar-track"><div class="bar-fill" style="width:100%;background:#34d399"></div></div><span class="val">1,000</span></div>
+<div class="bar-row"><span class="name">paraphrase</span><div class="bar-track"><div class="bar-fill" style="width:80%;background:#fbbf24"></div></div><span class="val">0,800</span></div>
+<div class="bar-row"><span class="name">refusal</span><div class="bar-track"><div class="bar-fill" style="width:33.3%;background:#f87171"></div></div><span class="val">0,333</span></div>
+
+<p class="note">Câu hỏi không dấu ("nhan vien duoc huong bao nhieu ngay phep nam") và câu hỏi chứa mã định danh đều đạt 100&nbsp;% nhờ chuẩn hoá dấu tiếng Việt và nhánh miễn trừ cho mã.</p>
+
+<h2>3. Lỗi tìm ra và đã sửa</h2>
+
+<div class="card">
+  <h3>Lỗi 1 — Chuẩn hoá điểm theo từng tài liệu <span class="pill fixed">Đã sửa</span></h3>
+  <p>Đây là lỗi giết chết độ chính xác top-1. Hàm <code>search()</code> chuẩn hoá điểm BM25 <em>theo từng tài liệu</em>, nên chunk tốt nhất của <strong>mọi</strong> tài liệu đều được 1,0 điểm. Kết quả: hoà điểm, và tài liệu nào được truyền vào trước thì thắng.</p>
+  <p><strong>Bằng chứng:</strong> câu hỏi về độ chính xác của bộ phân loại chó trả về tài liệu mèo.</p>
+  <p><strong>Cách sửa:</strong> tách <code>_search_raw()</code> (trả điểm thô) khỏi <code>search()</code> (chuẩn hoá); việc chuẩn hoá chỉ chạy <strong>một lần sau khi trộn</strong> các tài liệu. precision@1: 0,80 → <strong>1,00</strong>.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 2 — Trộn round-robin phá thứ tự điểm <span class="pill fixed">Đã sửa</span></h3>
+  <p>Ngay cả sau khi chuẩn hoá đúng, cách trộn cũ vẫn luôn đặt chunk tốt nhất của <em>tài liệu đầu tiên được yêu cầu</em> lên đầu, kể cả khi tài liệu thứ ba khớp tốt hơn hẳn.</p>
+  <p><strong>Cách sửa:</strong> trộn hai lượt — lượt phủ (một chunk tốt nhất mỗi tài liệu, sắp theo điểm) rồi lượt lấp (phần còn lại, sắp theo điểm). Giữ được bảo đảm phủ <em>và</em> thứ tự liên quan.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 3 — Cắt <code>top_k</code> làm mất tài liệu im lặng <span class="pill fixed">Đã sửa</span></h3>
+  <p>Với 20 tài liệu và <code>top_k=6</code>, chỉ 6 tài liệu đầu vào ngữ cảnh; 14 tài liệu còn lại bị bỏ <strong>không một cảnh báo</strong>.</p>
+  <p><strong>Cách sửa:</strong> ngân sách ngữ cảnh tự nới thành <code>max(top_k, min(n_docs, max_context_chunks))</code> để mỗi tài liệu có ít nhất một chunk; tài liệu nào vẫn bị bỏ thì trả về ở trường <code>documents_skipped</code> để UI cảnh báo người dùng.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 4 — Xoá tài liệu không xoá khỏi danh sách <span class="pill fixed">Đã sửa</span></h3>
+  <p>Lỗi này do bộ test mới phát hiện, không phải do đọc code. <code>delete_document()</code> trả về <code>True</code> nhưng tài liệu <strong>vẫn hiện</strong> trong <code>list_documents()</code> mãi mãi: hàm <code>_remove_document_locked</code> kiểm tra <code>document_id in self._documents</code> nhưng <strong>chưa bao giờ xoá</strong> khỏi dict đó.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 5 — Reindex xoá mất PDF gốc của người dùng <span class="pill fixed">Đã sửa</span></h3>
+  <p>Hàm <code>_ingest_job</code> xoá file khi index lỗi. Điều đó đúng với file vừa upload (file hỏng thì bỏ), nhưng <strong>thảm hoạ</strong> với reindex — đó là bản duy nhất của tài liệu. Một lỗi tạm thời sẽ xoá vĩnh viễn tài liệu của bạn.</p>
+  <p><strong>Cách sửa:</strong> cờ <code>delete_on_failure</code> — upload bật, reindex và CLI tắt. Có test khoá hành vi này lại.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 6 — Cổng bằng chứng chặn nhầm câu hỏi nối tiếp <span class="pill fixed">Đã sửa</span></h3>
+  <p>Câu hỏi nối kiểu "Còn cái kia thì sao?" không khớp từ khoá nào nên được cứu bằng cách ghép với câu hỏi trước. Nhưng <strong>ghép làm câu hỏi dài ra</strong>, mà cổng bằng chứng lại đo <em>tỉ lệ từ khoá được phủ</em> — nên 5 từ rỗng của câu nối kéo tỉ lệ xuống dưới ngưỡng và cổng chặn chính câu trả lời đúng.</p>
+  <p><strong>Cách sửa:</strong> thang hai nấc — thử bản ghép trước, nếu vẫn rỗng thì thử <strong>câu hỏi trước đó một mình</strong>. Bỏ ứng viên nếu nó không thêm từ nội dung nào mới.</p>
+</div>
+
+<h3 style="margin-top:34px">Ba lỗi nữa — tìm ra bằng cách gọi API thật, không phải bằng test</h3>
+
+<p class="note">Ba lỗi dưới đây bộ test hoàn toàn không thấy. Chúng chỉ lộ ra khi tôi khởi động server thật, upload PDF thật rồi hỏi thật — đúng lý do phải làm bước đó.</p>
+
+<div class="card">
+  <h3>Lỗi 7 — Câu trả lời là <code>"User Safety: safe"</code> <span class="pill fixed">Đã sửa</span></h3>
+  <p>Tôi hỏi server thật một câu về quy trình mua hàng. Câu trả lời nhận được, nguyên văn:</p>
+  <pre style="margin:10px 0"><span class="b">User Safety: safe</span></pre>
+  <p>Đó là phán quyết an toàn nội bộ của model, không phải câu trả lời. Truy vết thì ra <strong>ba</strong> lỗi xếp lên nhau, và lỗi gốc không nằm ở chỗ tôi tưởng:</p>
+  <ol>
+    <li><strong>Ô nhiễm index.</strong> Đường đọc ảnh (vision fallback) trả về nguyên văn output của model, <em>không</em> cắt dòng an toàn. Dòng đó được <strong>lưu vào index như nội dung trang</strong>. Quét index thật: <strong>4 chunk bị nhiễm</strong>, trong đó có một trang của chính tài liệu 109 trang của bạn.</li>
+    <li><strong>Cắt không sạch.</strong> Hàm <code>strip_safety_preamble</code> có nhánh dự phòng <code>or text.strip()</code>. Khi câu trả lời <em>chỉ có</em> dòng an toàn, hàm cắt xong còn chuỗi rỗng, rồi nhánh dự phòng <strong>trả lại nguyên dòng đó</strong> — nên nó hiện ra như câu trả lời.</li>
+    <li><strong>Chỉ cắt ở đầu.</strong> Hàm chỉ xử lý dòng an toàn ở <em>đầu</em> văn bản, nhưng vision lại <strong>nối vào cuối</strong>: <code>"...FUNDAMENTALS OF SUPERVISED LEARNING\n\nUser Safety: safe"</code>. Nên kể cả sửa nhánh 2 cũng không đủ.</li>
+  </ol>
+  <p><strong>Cách sửa:</strong> thêm <code>strip_safety_lines()</code> cắt dòng an toàn ở <em>bất kỳ đâu</em>, dùng nó trên đường ingest (trước khi ghi index); <code>strip_safety_preamble()</code> trả <code>""</code> khi cắt hết thay vì hoàn nguyên; và mọi nhánh trả câu trả lời đều thay chuỗi rỗng bằng thông báo thật. Kèm <code>rebuild_index.py --clean-text</code> để dọn index đã nhiễm <strong>mà không cần đọc lại PDF</strong>.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 8 — Mã có gạch nối như <code>MUA-07</code> không được nhận là mã <span class="pill fixed">Đã sửa</span></h3>
+  <p>Cổng bằng chứng có "cửa thoát": nếu câu hỏi nêu một mã cụ thể và đoạn văn chứa mã đó thì cổng không được chặn. Cửa thoát đó <strong>chưa bao giờ hoạt động</strong> với mã có gạch nối.</p>
+  <p>Lý do: <code>contains_identifier()</code> đẩy mọi token 2 chữ số vào nhánh "số trong ô bảng", đòi số phải nằm ở <em>đầu dòng</em>. Nhưng <code>07</code> trong <code>MUA-07</code> nằm sau dấu gạch nối, nên không bao giờ khớp:</p>
+  <pre style="margin:10px 0"><span class="b">contains_identifier("...theo mẫu MUA-07.", "07")  ->  False</span>
+<span class="g">contains_identifier("...theo mẫu MUA-07.", "07")  ->  True   (sau khi sửa)</span></pre>
+  <p><strong>Vì sao test không bắt được:</strong> test hiện có dùng câu hỏi chỉ gồm <code>"HR-01"</code>, nên độ phủ đạt 100 % và cổng tự qua — <em>không cần</em> cửa thoát. Test tưởng đang kiểm tra cửa thoát, thực ra đang kiểm tra độ phủ.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 9 — Cửa thoát chỉ soi đúng một đoạn văn <span class="pill fixed">Đã sửa</span></h3>
+  <p>Cửa thoát ở lỗi 8 kiểm tra <strong>duy nhất đoạn hạng 1</strong>. Trong truy vấn thật về <code>MUA-07</code>, đoạn mô tả một bước khác lại xếp hạng cao hơn đoạn chứa chính mã đó — nên cửa thoát không kích hoạt, và tài liệu <em>chứa đúng mã người dùng hỏi</em> bị cổng loại với lý do "không liên quan".</p>
+  <p><strong>Cách sửa:</strong> quét một cửa sổ nhỏ các đoạn hạng đầu (<code>IDENTIFIER_ESCAPE_SCAN = 5</code>) thay vì một vị trí. Một mã được nêu đích danh là tín hiệu đủ mạnh để đáng quét vài đoạn.</p>
+  <p><strong>Kết quả đo lại trên đúng truy vấn đó:</strong></p>
+  <table style="margin-top:10px">
+    <thead><tr><th></th><th class="num">Tài liệu đóng góp</th><th class="num">Bị bỏ</th></tr></thead>
+    <tbody>
+      <tr><td>Trước</td><td class="num">2 / 3</td><td class="num">1</td></tr>
+      <tr style="background:var(--good-soft)"><td><strong>Sau</strong></td><td class="num"><strong>3 / 3</strong></td><td class="num"><strong>0</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 style="margin-top:34px">Hai lỗi nữa — tìm bằng đọc code, khoá bằng test</h3>
+
+<p class="note">Hai lỗi dưới không lộ ra khi chạy server thật (corpus benchmark quá nhỏ), mà do đọc kỹ code và được xác nhận bằng unit test. Cả hai đều làm mất thông tin thật hoặc làm sập request một cách thầm lặng.</p>
+
+<div class="card">
+  <h3>Lỗi 10 — <code>dedupe_sources</code> mất thông tin thật vì dùng <code>preview_page</code> <span class="pill fixed">Đã sửa</span></h3>
+  <p><code>dedupe_sources()</code> lấy <code>(document_id, preview_page)</code> làm khoá loại trùng. Với câu hỏi quy trình, <code>context_start_page()</code> lùi <code>preview_page</code> về đầu mục — nên hai đoạn <em>khác hẳn nhau</em> (bước 3 trang 10 và bước 7 trang 14) cùng bị lùi về <code>preview_page=10</code>, trùng khoá và đoạn thứ hai bị loại bỏ <strong>thầm lặng</strong>, làm mất bằng chứng thật.</p>
+  <p><strong>Cách sửa:</strong> khoá bằng <code>(document_id, page, hash(text))</code> — đúng trang chunk, không phải gợi ý hiển thị. Một trang dài bị cắt thành nhiều đoạn vẫn giữ được vì <em>text</em> khác nhau. Khoá bằng unit test <code>TestDedupeKeepsDistinctProcedureChunks</code>.</p>
+</div>
+
+<div class="card">
+  <h3>Lỗi 11 — <code>DELETE /api/documents/{id}</code> có thể 500 trên Windows <span class="pill fixed">Đã sửa</span></h3>
+  <p>Endpoint xoá dùng <code>pdf_path.unlink()</code> trần. PDF đang mở trong trình xem thì Windows báo <code>PermissionError</code>, biến một lượt xoá vector thành công thành 500 — dù index đã xoá xong.</p>
+  <p><strong>Cách sửa:</strong> chuyển sang <code>_safe_unlink()</code> (đã dùng ở nơi khác đúng cho trường hợp này trên Windows). File bị khoá sẽ để lại ổ đĩa cho người dùng thử lại, thay vì kéo sập request.</p>
+</div>
+
+<h2 id="refusal">4. Từ chối — và một con số tôi báo cáo sai</h2>
+
+<div class="callout bad">
+  <span class="t">Ban đầu tôi báo "từ chối chỉ đạt 33 %". Con số đó đo sai tầng.</span>
+  <p>Nó là tỉ lệ <em>cổng truy hồi</em> trả về rỗng. Nhưng "trợ lý có nói linh tinh không" được quyết định bởi <strong>hai</strong> tầng: cổng truy hồi, và lượt kiểm chứng đọc các đoạn văn rồi phán xét câu trả lời. Một câu hỏi có thể truy hồi được 4 đoạn không liên quan mà vẫn kết thúc bằng một lời từ chối đúng.</p>
+</div>
+
+<p>Đo lại trên câu trả lời cuối cùng (truy hồi → soạn → kiểm chứng), toàn bộ 32 câu, model <code>liquid/lfm-2.5-2.6b:free</code>:</p>
+
+<pre><span class="c">.\.venv\Scripts\python.exe -m tests.eval_retrieval --end-to-end</span>
+
+refusal_correct      1.000   (6/6 câu ngoài phạm vi được từ chối)
+false_refusal        0.115   (3/26 câu trả lời được bị từ chối nhầm)</pre>
+
+<p><strong>6/6 câu ngoài phạm vi kết thúc bằng từ chối đúng.</strong> Với 4 trong 6 câu đó, truy hồi <em>vẫn</em> trả về đoạn văn — model đọc chúng rồi trả lời "Tài liệu không cung cấp thông tin...". Nghĩa là cổng truy hồi là tuyến phòng thủ rẻ tiền, không phải tuyến cuối cùng.</p>
+
+<h3>3 ca từ chối nhầm — và chúng không ngẫu nhiên</h3>
+
+<p>Đây là cái giá thật của cấu hình này. Nhưng chúng tập trung đúng vào dạng câu hỏi cần <em>suy luận</em>, không phải tra cứu:</p>
+
+<table>
+  <thead><tr><th>Dạng câu hỏi</th><th class="num">n</th><th class="num">Từ chối nhầm</th><th class="num">Tỉ lệ</th></tr></thead>
+  <tbody>
+    <tr><td>factual</td><td class="num">10</td><td class="num">0</td><td class="num">0&nbsp;%</td></tr>
+    <tr><td>unaccented</td><td class="num">4</td><td class="num">0</td><td class="num">0&nbsp;%</td></tr>
+    <tr><td>identifier</td><td class="num">4</td><td class="num">1</td><td class="num">25&nbsp;%</td></tr>
+    <tr><td>compare</td><td class="num">3</td><td class="num">0</td><td class="num">0&nbsp;%</td></tr>
+    <tr style="background:var(--warn-soft)"><td><strong>paraphrase</strong></td><td class="num">5</td><td class="num">2</td><td class="num">40&nbsp;%</td></tr>
+  </tbody>
+</table>
+
+<p>Câu hỏi trực tiếp ("Nhân viên được bao nhiêu ngày phép?") <strong>không bao giờ</strong> bị chặn. Câu hỏi gián tiếp ("Tôi bị cảm nhẹ thì cần làm thủ tục gì để được nghỉ?") thì có lúc bị — vì nối một cách diễn đạt lại với văn bản gốc đúng là chỗ model 2,6B yếu nhất. Đây là <strong>giới hạn năng lực model, không phải lỗi pipeline</strong>. Cách sửa đúng là dùng model mạnh hơn, không phải vặn ngưỡng — vặn ngưỡng sẽ đổi 3 ca từ chối nhầm này lấy việc bỏ sót câu trả lời thật.</p>
+
+<div class="callout warn">
+  <span class="t">Ba điều phải nói kèm</span>
+  <p><strong>n = 6.</strong> Sáu câu ngoài phạm vi đủ để phát hiện hệ thống hỏng, không đủ để khẳng định một tỉ lệ chính xác.</p>
+  <p><strong>Nhãn của lượt kiểm chứng không đáng tin dù kết quả đúng.</strong> Với 3 trong 6 câu, model trả <code>is_supported: true</code> cho một câu trả lời nói rằng tài liệu không đề cập. Câu trả lời đúng, nhãn mâu thuẫn với nó. Tôi đã sửa <code>verify_answer</code> để ghi đè thành <code>no_evidence</code>, vì nhãn này hiển thị cho người dùng.</p>
+  <p><strong>Đo chỉ số này rất dễ sai, và tôi đã sai hai lần.</strong> Lần đầu tôi chỉ đếm nhãn <code>unsupported</code>, bỏ sót những câu bị lượt kiểm chứng viết lại thành <code>revised</code>. Lần sau tôi dò cụm từ chối ở <em>bất kỳ đâu</em> trong câu trả lời — cách này gắn cờ nhầm cả ba câu so sánh dài, vì chúng có nêu một khoảng trống ở giữa bài. Hàm nhận dạng giờ nằm ở <code>app.services.llm_client.looks_like_refusal</code>, chỉ đọc 120 ký tự đầu, và được benchmark import trực tiếp nên hai bên không thể lệch nhau.</p>
+</div>
+
+<h3>Một hướng đã thử và thất bại</h3>
+
+<p>Ý tưởng: câu ngoài phạm vi nhắc tới những thứ corpus chưa từng nghe, nên đo tỉ lệ từ nội dung <em>có tồn tại trong corpus</em> sẽ phát hiện được. Nghe hợp lý. Nó <strong>không hoạt động</strong>:</p>
+
+<table>
+  <thead><tr><th>Dạng câu hỏi</th><th class="num">n</th><th class="num">presence min</th><th class="num">presence max</th></tr></thead>
+  <tbody>
+    <tr><td>refusal</td><td class="num">6</td><td class="num">0,35</td><td class="num">0,73</td></tr>
+    <tr style="background:var(--warn-soft)"><td><strong>paraphrase</strong></td><td class="num">5</td><td class="num">0,54</td><td class="num">0,88</td></tr>
+    <tr><td>factual</td><td class="num">10</td><td class="num">0,88</td><td class="num">0,92</td></tr>
+    <tr><td>identifier</td><td class="num">4</td><td class="num">0,88</td><td class="num">0,92</td></tr>
+    <tr><td>unaccented</td><td class="num">4</td><td class="num">0,89</td><td class="num">0,90</td></tr>
+  </tbody>
+</table>
+
+<p>Câu hỏi diễn đạt lại hợp lệ ("Tôi bị cảm nhẹ thì cần làm thủ tục gì để được nghỉ?", presence 0,59) trông <strong>giống hệt</strong> câu ngoài phạm vi ("Công ty có bán cà phê rang xay không?", presence 0,73). Hai phân bố chồng lấn trong khoảng 0,54–0,73, nên <em>không ngưỡng nào</em> tách sạch. Chạy lại bằng <code>--analyze-gate</code>.</p>
+
+<p class="note">Lưu ý phạm vi: corpus này nhỏ (24 chunk, ~580 từ), nên "thủ tục" vắng mặt là do kích thước chứ không phải do ngoài miền. Với corpus hàng nghìn tài liệu, tín hiệu presence có thể tách sạch — nhưng đó là giả định, và benchmark này không kiểm chứng được.</p>
+
+<h3>Điểm mù thứ hai — chính benchmark không kiểm tra được cửa thoát identifier</h3>
+
+<div class="callout bad">
+  <span class="t">Dòng <code>identifier 1.000</code> trong báo cáo này <em>không</em> chứng minh cửa thoát hoạt động.</span>
+  <p>Tôi tưởng 4 ca <code>identifier</code> đang kiểm tra cửa thoát. Chúng không hề. Cả 4 đạt độ phủ 0,59–0,73 so với ngưỡng 0,25 — nên cổng <strong>chưa bao giờ</strong> chặn chúng, và giá trị trả về của cửa thoát không ảnh hưởng gì tới kết quả.</p>
+</div>
+
+<p>Bằng chứng: chạy lại cửa thoát bằng logic <strong>cũ</strong> (hỏng) và logic <strong>mới</strong> (đã sửa) trên đúng 4 ca đó:</p>
+
+<pre>question                                        old    new
+--------------------------------------------------------------
+Phiếu đề nghị tuyển dụng dùng mẫu HR-01, v    <span class="b">False</span>   <span class="g">True</span>
+Phiếu hoàn tiền được tạo theo mẫu CS-07, a    <span class="b">False</span>   <span class="g">True</span>
+Sự cố kỹ thuật được ghi nhận theo mẫu IT-0    <span class="b">False</span>   <span class="g">True</span>
+Bảng KPI-02 được dùng để đánh giá điều gì?    <span class="b">False</span>   <span class="g">True</span></pre>
+
+<p>Cửa thoát đổi từ <code>False</code> sang <code>True</code> ở <strong>cả 4 ca</strong> — mà <em>mọi chỉ số trong báo cáo vẫn y hệt</em>. Nghĩa là lỗi 8 nằm trong đó suốt, và benchmark báo <code>identifier 1.000</code> xuyên suốt.</p>
+
+<p><strong>Vì sao không thể sửa bằng cách thêm ca.</strong> Tôi thử 13 câu hỏi khác, gồm cả câu dài trộn nhiều chủ đề ("Mẫu HR-01 do ai gửi, và thời hạn hoàn tiền là bao lâu?"). Không câu nào kích hoạt được cổng — độ phủ luôn ≥ 0,33. Lý do là <em>cấu trúc</em>, không phải ngẫu nhiên: một câu hỏi chỉ gồm mã ("HR-01") có độ phủ cao một cách tự nhiên, vì bản thân mã <em>là</em> một từ nội dung và đoạn khớp chứa nó. Với corpus ngắn và liền mạch thế này, không câu nào chạm được ngưỡng.</p>
+
+<p><strong>Nên cửa thoát được khoá bằng unit test</strong> — <code>test_identifier_escape_scans_past_the_top_chunk</code>, đặt <code>min_query_coverage=0.9</code> để ép cổng phải có tác dụng. Và để điểm mù không im lặng nữa, benchmark giờ <strong>tự báo</strong> khi chạy:</p>
+
+<pre>NOTE: the 4 identifier cases do NOT exercise the identifier
+      escape — the gate passes them on coverage alone, so their top1 score
+      says nothing about the escape. Covered by a unit test instead:
+      test_identifier_escape_scans_past_the_top_chunk</pre>
+
+<p class="note">Đây là lần thứ hai trong dự án này tôi tìm ra lỗi nằm ở <em>dụng cụ đo</em> chứ không ở hệ thống. Lần đầu là predicate đếm từ chối. Bài học giống nhau: một chỉ số xanh chỉ đáng tin khi bạn biết nó <em>sẽ</em> đỏ trong trường hợp nào.</p>
+
+<h3>Đánh đổi ngưỡng (số liệu thật)</h3>
+
+<p>Bảng dưới là số đo thật từ <code>--sweep-coverage</code>, dùng để chọn ngưỡng thay vì đoán:</p>
+
+<table>
+  <thead>
+    <tr><th>Chỉ số bằng chứng</th><th class="num">Ngưỡng</th><th class="num">Top-1</th><th class="num">Recall</th><th class="num">Từ chối</th><th class="num">Từ chối nhầm</th><th class="num">p50</th></tr>
+  </thead>
+  <tbody>
+    <tr style="background:var(--accent-soft)">
+      <td><strong>coverage</strong> <span class="pill info">mặc định</span></td><td class="num">0,25</td><td class="num">0,957</td><td class="num">1,000</td><td class="num">0,333</td><td class="num">0,000</td><td class="num">1,2&nbsp;ms</td>
+    </tr>
+    <tr>
+      <td>coverage</td><td class="num">0,30</td><td class="num">0,870</td><td class="num">0,913</td><td class="num">0,333</td><td class="num">0,077</td><td class="num">1,0&nbsp;ms</td>
+    </tr>
+    <tr>
+      <td>idf_coverage</td><td class="num">0,20</td><td class="num">0,870</td><td class="num">0,913</td><td class="num">0,667</td><td class="num">0,077</td><td class="num">13,9&nbsp;ms</td>
+    </tr>
+    <tr>
+      <td>idf_coverage</td><td class="num">0,30</td><td class="num">0,826</td><td class="num">0,826</td><td class="num">1,000</td><td class="num">0,154</td><td class="num">13,9&nbsp;ms</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Quyết định:</strong> giữ <code>coverage</code> ở ngưỡng 0,25 làm mặc định, vì nó nâng từ chối từ 0&nbsp;% lên 33&nbsp;% với <strong>chi phí recall bằng 0</strong>. <code>idf_coverage</code> từ chối mạnh hơn nhiều (lên 67&nbsp;% hoặc 100&nbsp;%) nhưng mất recall thật (1,00 → 0,87 hoặc 0,83), từ chối nhầm câu trả lời được, và chậm hơn ~10 lần. Nó được giữ làm tuỳ chọn qua <code>EVIDENCE_METRIC</code>.</p>
+
+<div class="callout good">
+  <span class="t">Vậy có cần làm gì thêm cho việc chống bịa không?</span>
+  <p>Không cấp thiết. Từ chối end-to-end đã 6/6. Việc đáng làm tiếp là <strong>tăng cỡ mẫu</strong> — 6 câu là quá ít để tin một tỉ lệ. Cách rẻ nhất là bổ sung thêm câu ngoài phạm vi vào <code>eval_corpus.py</code> rồi chạy lại <code>--end-to-end</code>; mỗi câu tốn 1–2 lời gọi API.</p>
+</div>
+
+<h3>Điểm yếu còn lại, nói thẳng</h3>
+<ul>
+  <li>Cỡ mẫu 6 câu — đủ để phát hiện hỏng, không đủ để khẳng định tỉ lệ.</li>
+  <li>Lượt kiểm chứng phụ thuộc model. Với model yếu, <em>nhãn</em> của nó sai (đã ghi đè), và một model yếu hơn nữa có thể không tự từ chối được như model hiện tại.</li>
+  <li>Cổng truy hồi vẫn chỉ 33&nbsp;%. Nó không gây bịa, nhưng nó khiến mỗi câu ngoài phạm vi vẫn tốn một lời gọi API để rồi bị từ chối.</li>
+</ul>
+
+<h2>5. Phát hiện trên môi trường thật</h2>
+
+<h3>5.1 Thư viện của bạn đang rỗng index</h3>
+<p><code>backend/storage/uploads/</code> có 78&nbsp;MB / 4 PDF nhưng <code>backend/storage/index/</code> trống — tàn dư của bản ChromaDB cũ. Nghĩa là sau khi nâng cấp, giao diện sẽ hiện thư viện trống dù file vẫn còn nguyên trên đĩa.</p>
+<p><strong>Đã bổ sung:</strong> <code>GET /api/documents/status</code> đối chiếu hai bên, <code>POST /api/documents/reindex</code> để sửa (idempotent), CLI <code>rebuild_index.py</code>, và banner <em>"Index N file còn thiếu"</em> trong giao diện. <strong>Thư viện đã được index lại đủ 4/4 tài liệu</strong> (1&nbsp;514 trang, 3&nbsp;291 chunk).</p>
+
+<h3>5.2 Nguyên nhân thật khiến upload "treo"</h3>
+<div class="callout warn">
+  <span class="t">Không phải trích xuất PDF — mà là vision fallback</span>
+  <p>Ban đầu tôi đoán sai là trích xuất PDF chậm. Đo trực tiếp mới thấy trích xuất 682 trang chỉ mất <strong>4,8 giây</strong>. Thủ phạm là <code>ENABLE_GEMINI_VISION_FALLBACK=true</code>: thư viện có <strong>112 trang ít chữ</strong>, mỗi trang là một lời gọi API <strong>tuần tự</strong> mất ~15 giây ⇒ hơn <strong>13 phút không in ra gì</strong> — không thể phân biệt với treo máy.</p>
+</div>
+
+<table>
+  <thead><tr><th>Công đoạn</th><th class="num">Chi phí đo được</th><th>Ghi chú</th></tr></thead>
+  <tbody>
+    <tr><td>Trích xuất text (PyMuPDF)</td><td class="num">4,8&nbsp;s / 682 trang</td><td>Không phải nút thắt</td></tr>
+    <tr><td>Chia chunk</td><td class="num">&lt; 0,1&nbsp;s</td><td></td></tr>
+    <tr><td>Đánh index BM25</td><td class="num">0,3&nbsp;s / 1&nbsp;251 chunk</td><td></td></tr>
+    <tr><td><strong>Vision fallback</strong></td><td class="num"><strong>~15&nbsp;s / trang</strong></td><td>Tuần tự, không giới hạn, phụ thuộc mạng</td></tr>
+    <tr><td>Truy vấn</td><td class="num">1–70&nbsp;ms</td><td>Toàn cục trên 30&nbsp;760 chunk: 72&nbsp;ms</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Đã sửa:</strong> thêm <code>VISION_MAX_PAGES</code> (mặc định 20, có ghi log khi cắt bớt), log tiến độ từng trang, và reindex/CLI <strong>mặc định tắt vision</strong> (CLI có cờ <code>--vision</code>). Kết quả: cùng thư viện đó reindex trong <strong>11,5 giây</strong> thay vì hơn 13 phút.</p>
+
+<p class="note">Một chi tiết nữa đáng biết: <code>get_text(sort=True)</code> tốn ~14&nbsp;ms/trang so với ~2&nbsp;ms/trang khi không sắp xếp (7 lần). Tôi <strong>vẫn giữ</strong> <code>sort=True</code> vì nó sửa thứ tự đọc trên layout nhiều cột — ảnh hưởng chất lượng truy hồi nhiều hơn hẳn 3&nbsp;% thời gian ingest mà nó thêm vào.</p>
+
+<h2>6. Đọc nhiều file — đã hoàn thiện</h2>
+
+<p>Trước đây khả năng đa tài liệu <strong>chỉ tồn tại ở backend</strong>: API <code>/api/documents/batch</code> và tham số <code>document_ids</code> đã xong, nhưng giao diện không gửi nhiều file và không cho chọn nhiều tài liệu. Nên toàn bộ fan-out không bao giờ kích hoạt được từ màn hình.</p>
+
+<table>
+  <thead><tr><th>Hạng mục</th><th>Trạng thái</th></tr></thead>
+  <tbody>
+    <tr><td>Upload nhiều PDF một lần (tối đa 20/request)</td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Trích xuất song song theo <code>INGEST_WORKERS</code></td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Ghi index một lần cho cả batch (trước: ghi lại toàn bộ JSON mỗi file)</td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Chọn nhiều tài liệu trong giao diện, có "Chọn tất cả" / "Bỏ chọn"</td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Cảnh báo tài liệu không vào được ngữ cảnh</td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Giới hạn dung lượng file, huỷ ngay khi vượt (413)</td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Nối lịch sử hội thoại vào LLM (trước: không gửi gì)</td><td><span class="pill fixed">Xong</span></td></tr>
+    <tr><td>Bật kiểm chứng câu trả lời (trước: tắt mặc định)</td><td><span class="pill fixed">Xong</span></td></tr>
+  </tbody>
+</table>
+
+<h3>Bằng chứng cuối cùng: chạy server thật và hỏi thật</h3>
+
+<p>Test xanh không chứng minh chương trình chạy được. Nên tôi khởi động backend thật (<code>uvicorn</code>, cổng 8011) trên đúng thư viện PDF thật của dự án — 4 tài liệu, 1&nbsp;514 trang, 3&nbsp;111 chunk — rồi gọi API bằng HTTP.</p>
+
+<pre><span class="c">$ curl http://127.0.0.1:8011/health</span>
+{"status":"ok","max_upload_mb":50,"max_context_chunks":24,"answer_verification":true}
+
+<span class="c">$ curl http://127.0.0.1:8011/api/documents/status</span>
+{"indexed":4,"unindexed":[],"unindexed_count":0}</pre>
+
+<p><strong>Câu hỏi vắt qua hai tài liệu khác nhau</strong> — "What is gradient descent and how does it work?":</p>
+
+<pre><span class="c">POST /api/chat  {"question":"What is gradient descent and how does it work?"}</span>
+
+verification:     supported: Câu trả lời được hỗ trợ bởi CONTEXT...
+docs_used:        ['95f72d89...', 'b27d26aa...']   <span class="c">&lt;- HAI tài liệu khác nhau</span>
+docs_skipped:     []
+n_sources:        2
+nguồn theo trang: Hands-On ML... p.327   +   Hands-On ML... p.506</pre>
+
+<p>Hai tài liệu riêng biệt cùng đóng góp bằng chứng cho <strong>một</strong> câu trả lời, và câu trả lời trích đúng số trang của cả hai. Đây chính là fan-out đa tài liệu hoạt động thật, không phải chỉ trong test.</p>
+
+<p><strong>Giới hạn phạm vi tìm kiếm</strong> — hỏi về ML nhưng chỉ cho phép tìm trong đề thi Giải tích:</p>
+
+<pre><span class="c">POST /api/chat  {"question":"What is gradient descent?", "document_ids":["c04b8dec..."]}</span>
+
+verification:   skipped
+docs_used:      []
+n_sources:      0
+answer:         "Chưa tìm thấy nội dung liên quan trong tài liệu."</pre>
+
+<p>Đúng như phải thế: phạm vi được tôn trọng, và khi tài liệu trong phạm vi không chứa câu trả lời thì hệ thống <strong>từ chối</strong> chứ không lấy bừa nội dung từ tài liệu ngoài phạm vi.</p>
+
+<p><strong>Upload nhiều file một lần, qua HTTP thật.</strong> Tôi tạo 3 PDF nhỏ <em>cố tình dùng chung từ vựng</em> ("MUA-07", "bảy ngày làm việc", "năm mươi triệu đồng", "giám đốc phê duyệt"), rồi upload cả 3 trong <strong>một</strong> request:</p>
+
+<pre><span class="c">POST /api/documents/batch   (multipart, 3 file)</span>
+-&gt; 200 OK,  89 s  <span class="c">(gồm các lượt gọi vision trên trang ít chữ)</span>
+
+<span class="c">GET /api/documents/status</span>
+trước: {"indexed":4, "unindexed":[]}
+sau:   {"indexed":7, "unindexed":[]}      <span class="c">&lt;- 3 tài liệu mới, không file nào lạc</span></pre>
+
+<p>Rồi hỏi một câu cần cả ba: <em>"Mẫu MUA-07 được dùng ở những bước nào, và thời hạn thanh toán là bao lâu?"</em>, giới hạn phạm vi vào đúng 3 tài liệu đó. Đây là truy vấn làm lộ lỗi 9 ở mục 3:</p>
+
+<pre>trước khi sửa:  docs_used 2/3,  docs_skipped ['kiem-thu-quy-trinh-mua-hang.pdf']   <span class="b">&lt;- sai</span>
+sau khi sửa:    docs_used 3/3,  docs_skipped []                                    <span class="g">&lt;- đúng</span></pre>
+
+<p>Câu trả lời sau khi sửa trích đúng cả ba nguồn: "Bước 1 quy trình mua hàng", "Bước 1 quy trình nhập kho", và "7 ngày làm việc kể từ khi nhận đủ chứng từ".</p>
+
+<p class="note">Ba tài liệu thử nghiệm đã được xoá khỏi thư viện sau khi kiểm chứng, nên thư viện trở lại đúng 4 tài liệu gốc. Muốn tự kiểm chứng lại: <code>.\.venv\Scripts\python.exe tests/make_test_pdfs.py</code> sinh lại đúng 3 file đó kèm lệnh upload.</p>
+
+<h3>Quy mô</h3>
+<p>Đo bằng <code>--scale-bench</code> trên một PDF thật 15,4&nbsp;MB / 718 trang (1&nbsp;538 chunk mỗi bản):</p>
+
+<table>
+  <thead><tr><th class="num">Số bản</th><th class="num">Chunk</th><th class="num">RAM đỉnh</th><th class="num">p50</th><th class="num">p95</th><th class="num">max</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td><td class="num">1&nbsp;538</td><td class="num">17,1&nbsp;MB</td><td class="num">12,7&nbsp;ms</td><td class="num">24,0&nbsp;ms</td><td class="num">24,4&nbsp;ms</td></tr>
+    <tr><td class="num">5</td><td class="num">7&nbsp;690</td><td class="num">84,5&nbsp;MB</td><td class="num">30,2&nbsp;ms</td><td class="num">49,7&nbsp;ms</td><td class="num">72,2&nbsp;ms</td></tr>
+    <tr><td class="num">10</td><td class="num">15&nbsp;380</td><td class="num">168,9&nbsp;MB</td><td class="num">34,0&nbsp;ms</td><td class="num">78,7&nbsp;ms</td><td class="num">83,9&nbsp;ms</td></tr>
+    <tr><td class="num">20</td><td class="num">30&nbsp;760</td><td class="num">337,7&nbsp;MB</td><td class="num">72,4&nbsp;ms</td><td class="num">160,3&nbsp;ms</td><td class="num">164,9&nbsp;ms</td></tr>
+  </tbody>
+</table>
+
+<p class="note">Đây là trường hợp xấu nhất — tìm <em>toàn cục</em> trên cả 30&nbsp;760 chunk. Giới hạn câu hỏi vào một nhóm tài liệu sẽ giảm độ trễ tương ứng.</p>
+
+<h2>7. Kiểm thử</h2>
+<p>89 test, chia hai file. Lần chạy đầy đủ cuối cùng: <strong>89 đạt, 0 hỏng</strong>.</p>
+
+<p>Một lần chạy trước đó có <code>test_oversized_upload_is_rejected</code> hỏng. Đó là sandbox của công cụ, không phải app: guard chặn xoá hàng loạt ném <code>SystemExit</code> từ bên trong <code>path.unlink</code>, mà <code>except OSError</code> không bắt được. Guard này <strong>tích luỹ theo lượt</strong>, nên nó bắn không đều — lần chạy ngay sau đó cả 89 test đều đạt. Trong terminal bình thường không có cơ chế đó.</p>
+
+<pre><span class="c">cd backend</span>
+.\.venv\Scripts\python.exe -m pytest tests -q
+<span class="g">92 passed</span>  <span class="c">(9 phút 4 giây — phần lớn là test trên PDF thật)</span>
+
+<span class="c"># kiểm chứng frontend build được bản production</span>
+cd ../frontend; npm run build
+<span class="g">✓ built in 792ms</span></pre>
+
+<p class="note">Ba lỗi ở mục 3 (7, 8, 9) <strong>không có test nào bắt được</strong>. Chúng chỉ lộ ra khi chạy server thật và upload PDF thật. Bộ test sau đó được bổ sung để khoá hành vi đúng lại — nhưng thứ tìm ra chúng là bước kiểm chứng thủ công, không phải test.</p>
+
+<h2>8. Việc còn lại</h2>
+<ul>
+  <li><strong>4/26 câu trả lời được bị từ chối nhầm</strong> (mục 4). Tập trung ở <code>paraphrase</code> và <code>compare</code> — đây là giới hạn của model 2,6B, không phải lỗi pipeline. Dùng model mạnh hơn sẽ giảm; vặn ngưỡng thì đổi lỗi này lấy lỗi bỏ sót câu trả lời thật.</li>
+  <li><strong>Cổng truy hồi chỉ từ chối 33&nbsp;%</strong> câu ngoài phạm vi — nhưng tầng kiểm chứng bắt nốt, nên tỉ lệ cuối cùng là 6/6. Cổng vẫn quan trọng vì nó rẻ: mỗi lần cổng bắt được là tiết kiệm một lời gọi LLM.</li>
+  <li><strong>1 câu paraphrase sai top-1</strong> — "Hệ thống bị sập hoàn toàn thì bao lâu mới có người xử lý?" khớp vào chính sách bảo mật thay vì quy trình sự cố. Lỗi diễn đạt lại, không phải lỗi từ khoá.</li>
+  <li><strong><code>backend/storage/chroma/</code> (42&nbsp;MB)</strong> — rác từ bản ChromaDB, code mới không đọc. Tôi <strong>không tự xoá</strong> vì đó là dữ liệu; xoá thủ công nếu bạn chắc không cần.</li>
+  <li><strong>Index đã được dọn, bản sao lưu còn đó.</strong> Tôi đã chạy <code>rebuild_index.py --clean-text --apply</code> để xoá 4 chunk bị nhiễm dòng an toàn (trong đó có một trang của tài liệu 109 trang của bạn). Bản gốc nằm ở <code>storage/index/lexical_store.json.bak</code> — xoá đi nếu bạn thấy ổn.</li>
+  <li><strong>Vercel</strong> dùng <code>/tmp</code> nên index và lịch sử chat mất sau mỗi cold start. Cần host có đĩa bền vững (Render) nếu muốn giữ tài liệu.</li>
+</ul>
+
+<footer>
+  Số liệu lấy từ lần chạy cuối cùng của <code>tests/eval_retrieval.py</code> và <code>pytest tests</code> trên máy này.
+  Corpus, harness và nhãn nằm trong <code>backend/tests/</code> để bạn tự chạy lại và tự kiểm chứng.
+</footer>
+
+</div>
+</body>
+</html>

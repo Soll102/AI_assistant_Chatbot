@@ -12,9 +12,16 @@ class ChatHistoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        # timeout 30s + WAL: chat concurrent trước đây dễ gặp
+        # "database is locked" vì SQLite default journal + timeout 5s.
+        connection = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA busy_timeout = 30000")
+        except sqlite3.Error:
+            pass
         return connection
 
     def _init_db(self) -> None:
@@ -89,16 +96,21 @@ class ChatHistoryStore:
         return cursor.rowcount > 0
 
     def add_message(self, session_id: str, role: str, content: str) -> ChatMessage:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
-                (session_id, role, content),
-            )
-            connection.execute(
-                "UPDATE chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (session_id,),
-            )
-            message_id = int(cursor.lastrowid)
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
+                    (session_id, role, content),
+                )
+                connection.execute(
+                    "UPDATE chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (session_id,),
+                )
+                message_id = int(cursor.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            # Session bị xoá concurrent giữa get_or_create và insert: FK fail.
+            # Trước đây bubble thành 500; giờ báo lỗi rõ để caller map 404.
+            raise ValueError(f"Không tìm thấy session {session_id}") from exc
         return self.get_message(message_id)
 
     def list_messages(self, session_id: str) -> list[ChatMessage]:

@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Đánh giá kiến trúc RAG Chatbot</title>
+<style>
+  :root {
+    --bg: #1b1b1a;
+    --surface: #242422;
+    --surface-2: #2c2c2a;
+    --border: #3d3d3a;
+    --text: #ececea;
+    --text-2: #b4b2a9;
+    --text-3: #888780;
+    --blue: #85b7eb;
+    --blue-bg: #0c447c;
+    --red: #f09595;
+    --red-bg: #791f1f;
+    --amber: #ef9f27;
+    --amber-bg: #633806;
+    --teal: #5dcaa5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 48px 28px 80px; }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .sub { color: var(--text-2); font-size: 14px; margin: 0 0 36px; }
+  h2 { font-size: 19px; font-weight: 600; margin: 48px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 15px; font-weight: 600; margin: 28px 0 10px; color: var(--text); }
+  p { margin: 0 0 14px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: #d8d6cd; }
+  .verdict { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 8px; padding: 18px 20px; margin: 0 0 12px; }
+  .verdict p:last-child { margin-bottom: 0; }
+  .figure { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin: 18px 0 24px; }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .cap { color: var(--text-3); font-size: 12.5px; margin: 12px 0 0; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  li strong { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 20px; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-2); font-weight: 600; font-size: 13px; }
+  .tag { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.02em; }
+  .p0 { background: var(--red-bg); color: #fcebeb; }
+  .p1 { background: var(--amber-bg); color: #faeeda; }
+  .p2 { background: var(--surface-2); color: var(--text-2); }
+  .good { color: var(--teal); }
+  .bad { color: var(--red); }
+  .mid { color: var(--amber); }
+  .fix { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin-bottom: 12px; }
+  .fix h4 { margin: 0 0 6px; font-size: 14.5px; font-weight: 600; }
+  .fix p { margin: 0; font-size: 14px; color: var(--text-2); }
+  .loc { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--text-3); }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 24px; }
+  .metric { background: var(--surface); border-radius: 8px; padding: 14px 16px; }
+  .metric .k { font-size: 12.5px; color: var(--text-3); margin-bottom: 4px; }
+  .metric .v { font-size: 19px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>RAG Chatbot — đánh giá kiến trúc</h1>
+  <p class="sub">Đọc từ mã nguồn tại <code>backend/app</code> và <code>frontend/src</code> · 21/09/2026</p>
+
+  <div class="verdict">
+    <p><strong>Kết luận ngắn:</strong> hệ thống đã chọn đúng hướng cho mục tiêu "nhẹ, chạy máy yếu" — bỏ hẳn embedding/torch/ChromaDB, chỉ còn Python thuần + JSON. Cái giá phải trả nằm ở <strong>độ chính xác truy hồi trên dữ liệu thật</strong> và ở chỗ <strong>tính năng nhiều file mới chỉ có ở backend, UI chưa dùng tới</strong>. Cơ chế "không nói linh tinh" thì đã khá tốt và có bằng chứng trong code.</p>
+  </div>
+
+  <h2>Kiến trúc thực tế</h2>
+
+  <div class="figure">
+    <svg viewBox="0 0 680 334" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title>Sơ đồ workflow RAG của hệ thống</title>
+      <desc>Hai giai đoạn: nạp tài liệu và trả lời câu hỏi, kèm nhánh từ chối khi không có bằng chứng.</desc>
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </marker>
+      </defs>
+      <rect x="24" y="14" width="632" height="110" rx="16" fill="#2C2C2A" stroke="#5F5E5A" stroke-width="0.5"/>
+      <text x="40" y="36" font-size="12" fill="#D3D1C7" dominant-baseline="central">1 · Nạp tài liệu — chạy một lần khi upload</text>
+      <rect x="40" y="48" width="138" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="109" y="68" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Upload PDF</text>
+      <text x="109" y="86" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">1 hoặc nhiều file</text>
+      <rect x="194" y="48" width="138" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="263" y="68" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Trích text</text>
+      <text x="263" y="86" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">PyMuPDF, sort</text>
+      <rect x="348" y="48" width="138" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="417" y="68" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Chunk theo trang</text>
+      <text x="417" y="86" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">1100 ký tự / 180</text>
+      <rect x="502" y="48" width="138" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="571" y="68" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Kho lexical</text>
+      <text x="571" y="86" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">JSON trong RAM</text>
+      <line x1="179" y1="76" x2="193" y2="76" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="333" y1="76" x2="347" y2="76" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="487" y1="76" x2="501" y2="76" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <rect x="24" y="142" width="632" height="110" rx="16" fill="#2C2C2A" stroke="#5F5E5A" stroke-width="0.5"/>
+      <text x="40" y="164" font-size="12" fill="#D3D1C7" dominant-baseline="central">2 · Trả lời câu hỏi — mỗi lượt chat</text>
+      <rect x="40" y="172" width="138" height="56" rx="8" fill="#042C53" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="109" y="192" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Câu hỏi</text>
+      <text x="109" y="210" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">+ document_ids</text>
+      <rect x="194" y="172" width="138" height="56" rx="8" fill="#042C53" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="263" y="192" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Router ý định</text>
+      <text x="263" y="210" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">keyword, 0 LLM</text>
+      <rect x="348" y="172" width="138" height="56" rx="8" fill="#042C53" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="417" y="192" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Truy hồi lexical</text>
+      <text x="417" y="210" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">fan-out + quota</text>
+      <rect x="502" y="172" width="138" height="56" rx="8" fill="#042C53" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="571" y="192" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Sinh câu trả lời</text>
+      <text x="571" y="210" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">LLM + kiểm chứng</text>
+      <line x1="179" y1="200" x2="193" y2="200" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="333" y1="200" x2="347" y2="200" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="487" y1="200" x2="501" y2="200" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="417" y1="228" x2="417" y2="269" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+      <text x="429" y="248" font-size="12" fill="#B4B2A9" dominant-baseline="central">score = 0</text>
+      <rect x="348" y="270" width="292" height="44" rx="8" fill="#791F1F" stroke="#F09595" stroke-width="0.5"/>
+      <text x="494" y="292" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#FCEBEB">Không có bằng chứng → từ chối trả lời</text>
+    </svg>
+    <p class="cap">Hai giai đoạn tách hẳn nhau. Giai đoạn nạp chỉ chạy khi upload; giai đoạn trả lời không đụng lại PDF gốc.</p>
+  </div>
+
+  <h3>Truy hồi nhiều tài liệu</h3>
+  <p><code>VectorStore.search_many()</code> tìm riêng từng tài liệu rồi trộn round-robin để không tài liệu nào bị "đói" slot. Nhưng có một điểm cắt cứng ở cuối:</p>
+
+  <div class="figure">
+    <svg viewBox="0 0 680 376" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title>Cách truy hồi nhiều tài liệu và điểm cắt top_k</title>
+      <desc>Mỗi tài liệu được tìm riêng, trộn round-robin, rồi cắt còn top_k bằng 6, khiến tài liệu thứ 7 trở đi bị bỏ.</desc>
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </marker>
+      </defs>
+      <text x="40" y="30" font-size="12" fill="#D3D1C7" dominant-baseline="central">Mỗi tài liệu được tìm riêng, rồi trộn vòng tròn</text>
+      <rect x="40" y="46" width="138" height="44" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="109" y="68" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#E6F1FB">cats.pdf</text>
+      <rect x="194" y="46" width="138" height="44" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="263" y="68" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#E6F1FB">dogs.pdf</text>
+      <rect x="348" y="46" width="138" height="44" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="417" y="68" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#E6F1FB">cooking.pdf</text>
+      <rect x="502" y="46" width="138" height="44" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="571" y="68" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#E6F1FB">… tới 20 file</text>
+      <line x1="109" y1="90" x2="109" y2="112" stroke="#888780" stroke-width="1.5"/>
+      <line x1="263" y1="90" x2="263" y2="112" stroke="#888780" stroke-width="1.5"/>
+      <line x1="417" y1="90" x2="417" y2="112" stroke="#888780" stroke-width="1.5"/>
+      <line x1="571" y1="90" x2="571" y2="112" stroke="#888780" stroke-width="1.5"/>
+      <line x1="109" y1="112" x2="571" y2="112" stroke="#888780" stroke-width="1.5"/>
+      <line x1="340" y1="112" x2="340" y2="135" stroke="#888780" stroke-width="1.5" marker-end="url(#a2)"/>
+      <rect x="180" y="136" width="320" height="56" rx="8" fill="#042C53" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="340" y="156" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">Trộn round-robin</text>
+      <text x="340" y="174" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B5D4F4">mỗi tài liệu một slot mỗi lượt</text>
+      <line x1="340" y1="192" x2="340" y2="217" stroke="#888780" stroke-width="1.5" marker-end="url(#a2)"/>
+      <rect x="180" y="218" width="320" height="56" rx="8" fill="#633806" stroke="#EF9F27" stroke-width="0.5"/>
+      <text x="340" y="238" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#FAEEDA">Cắt còn top_k = 6</text>
+      <text x="340" y="256" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#FAC775">chỉ 6 tài liệu lọt vào context</text>
+      <line x1="340" y1="274" x2="340" y2="299" stroke="#888780" stroke-width="1.5" marker-end="url(#a2)"/>
+      <rect x="180" y="300" width="320" height="56" rx="8" fill="#633806" stroke="#EF9F27" stroke-width="0.5"/>
+      <text x="340" y="320" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#FAEEDA">Tài liệu thứ 7 trở đi bị bỏ</text>
+      <text x="340" y="338" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#FAC775">không báo lỗi, không cảnh báo</text>
+    </svg>
+    <p class="cap">Với 20 tài liệu và <code>top_k = 6</code>, chỉ 6 tài liệu đầu vào được context. 14 tài liệu còn lại biến mất im lặng.</p>
+  </div>
+
+  <h3>Chuỗi cổng chống bịa</h3>
+  <p>Đây là phần mạnh nhất của hệ thống. Có 5 lớp chặn, trong đó 2 lớp là "cổng cứng":</p>
+
+  <div class="figure">
+    <svg viewBox="0 0 680 436" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title>Năm cổng chống bịa đặt trong pipeline trả lời</title>
+      <desc>Năm bước gồm truy hồi, cổng bằng chứng, siết nguồn, sinh câu trả lời, và kiểm chứng mặc định đang tắt.</desc>
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </marker>
+      </defs>
+      <rect x="120" y="40" width="440" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="140" y="60" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">1 · Truy hồi lexical</text>
+      <text x="140" y="78" dominant-baseline="central" font-size="12" fill="#B5D4F4">quét toàn bộ chunk của các tài liệu được chọn</text>
+      <line x1="340" y1="96" x2="340" y2="119" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="120" y="120" width="440" height="56" rx="8" fill="#791F1F" stroke="#F09595" stroke-width="0.5"/>
+      <text x="140" y="140" dominant-baseline="central" font-size="14" font-weight="500" fill="#FCEBEB">2 · Cổng bằng chứng</text>
+      <text x="140" y="158" dominant-baseline="central" font-size="12" fill="#F7C1C1">score 0 → trả "chưa tìm thấy", không gọi LLM</text>
+      <line x1="340" y1="176" x2="340" y2="199" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="120" y="200" width="440" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="140" y="220" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">3 · Siết nguồn hiển thị</text>
+      <text x="140" y="238" dominant-baseline="central" font-size="12" fill="#B5D4F4">confident_sources: giữ 1–2 đoạn chắc chắn nhất</text>
+      <line x1="340" y1="256" x2="340" y2="279" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="120" y="280" width="440" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+      <text x="140" y="300" dominant-baseline="central" font-size="14" font-weight="500" fill="#E6F1FB">4 · Sinh câu trả lời</text>
+      <text x="140" y="318" dominant-baseline="central" font-size="12" fill="#B5D4F4">temperature 0.2, prompt cấm bịa nguồn và số trang</text>
+      <line x1="340" y1="336" x2="340" y2="359" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="120" y="360" width="440" height="56" rx="8" fill="#791F1F" stroke="#F09595" stroke-width="0.5"/>
+      <text x="140" y="380" dominant-baseline="central" font-size="14" font-weight="500" fill="#FCEBEB">5 · Kiểm chứng — mặc định TẮT</text>
+      <text x="140" y="398" dominant-baseline="central" font-size="12" fill="#F7C1C1">không được hỗ trợ → viết lại hoặc từ chối trả lời</text>
+    </svg>
+    <p class="cap">Cổng 2 và cổng 5 là hai chốt chặn thật. Nhưng cổng 5 đang tắt mặc định trong cấu hình.</p>
+  </div>
+
+  <h2>Thông số đang chạy</h2>
+  <div class="metrics">
+    <div class="metric"><div class="k">Chunk size / overlap</div><div class="v">1100 / 180</div></div>
+    <div class="metric"><div class="k">top_k</div><div class="v">6</div></div>
+    <div class="metric"><div class="k">Batch tối đa</div><div class="v">20 file</div></div>
+    <div class="metric"><div class="k">Temperature</div><div class="v">0.2</div></div>
+    <div class="metric"><div class="k">Kiểm chứng</div><div class="v bad">Tắt</div></div>
+    <div class="metric"><div class="k">Vision (PDF scan)</div><div class="v bad">Tắt</div></div>
+  </div>
+
+  <h2>Ưu điểm</h2>
+  <ul>
+    <li><strong>Nhẹ thật, không nhẹ nửa vời.</strong> <code>requirements.txt</code> chỉ có 7 gói, toàn thứ nhẹ: fastapi, uvicorn, PyMuPDF, httpx, numpy. Không torch, không onnxruntime, không ChromaDB. Cài đặt vài chục giây, chạy tốt trên máy yếu.</li>
+    <li><strong>Router ý định bằng keyword, 0 token LLM.</strong> <code>quick_tool_plan()</code> phân loại list / compare / summarize trước khi gọi model. Tiết kiệm một vòng gọi API cho phần lớn câu hỏi, đồng thời loại luôn rủi ro model chọn sai tool.</li>
+    <li><strong>Cổng từ chối cứng.</strong> Nếu điểm truy hồi bằng 0 và câu hỏi không chứa mã định danh, <code>search()</code> trả về rỗng ngay. API trả "Chưa tìm thấy nội dung liên quan trong tài liệu." và <em>không gọi LLM</em>. Đây là cách chống bịa rẻ và chắc nhất.</li>
+    <li><strong>Siết nguồn hiển thị.</strong> <code>confident_sources()</code> chỉ cho đoạn thứ 2 lọt vào khi nó gần bằng điểm đoạn 1 (≥85% và ≥0.4), hoặc cả hai cùng chứa mã định danh chính xác. Tránh việc nhồi 5-6 đoạn rác làm loãng context.</li>
+    <li><strong>Có lớp kiểm chứng thứ hai.</strong> <code>verify_answer()</code> bắt model tự chấm câu trả lời có bám context không, và nếu không thì bắt viết lại hoặc từ chối. Đúng kiến trúc, chỉ cần bật lên.</li>
+    <li><strong>Prompt được thiết kế kỹ.</strong> Cấm tự ghi nguồn/số trang trong câu trả lời (tránh citation giả), cấm tiền tố phân loại, và có hàm <code>strip_safety_preamble()</code> để dọn các dòng rác kiểu "User Safety:" mà model free hay chèn.</li>
+    <li><strong>Backend đã sẵn sàng cho đa tài liệu.</strong> Có <code>/api/documents/batch</code>, <code>search_many()</code> với quota công bằng, <code>compare_pdfs</code> giữ ít nhất 1 nguồn mỗi tài liệu, và <code>documents_used</code> để quan sát tài liệu nào thực sự đóng góp. Tương thích ngược với API cũ vẫn giữ.</li>
+    <li><strong>Có bộ test chất lượng thật.</strong> <code>tests/test_multi_pdf_quality.py</code> phủ 6 pha: nạp, truy hồi, routing, context, API, và một cổng precision/recall/F1. Hiếm dự án RAG nhỏ có cái này.</li>
+    <li><strong>Metadata trang đi kèm mọi chunk.</strong> Mỗi chunk mang <code>document_id</code>, <code>filename</code>, <code>page</code> — đủ để trích dẫn và để UI nhảy đúng trang PDF.</li>
+  </ul>
+
+  <h2>Nhược điểm</h2>
+
+  <h3>1. Độ chính xác truy hồi — điểm yếu lớn nhất</h3>
+  <ul>
+    <li><strong>Không có IDF, không có BM25.</strong> <code>lexical_score()</code> chỉ tính <code>số từ khớp / tổng số từ trong câu hỏi</code>. Hệ quả: một đoạn rác 1 câu chứa đúng 1 từ khoá sẽ được điểm 1.0 ngang bằng đoạn chứa toàn bộ nội dung đúng. Không có trọng số từ hiếm, không chuẩn hoá độ dài chunk. Đây là nguyên nhân gốc của phần lớn lỗi xếp hạng.</li>
+    <li><strong>Từ đồng nghĩa chỉ có một bảng hardcode.</strong> <code>ALIASES</code> chỉ phủ vài chủ đề ML (relu, overfitting, dropout, gradient) cộng thêm ánh xạ "huấn/luyện → train". Hỏi bằng tiếng Việt diễn đạt khác đi là trượt truy hồi, và hệ thống sẽ trả "chưa tìm thấy" — an toàn nhưng vô dụng.</li>
+    <li><strong>Ánh xạ Việt→Anh bị phạt điểm.</strong> <code>expand_terms()</code> chỉ mở rộng alias cho phía câu hỏi. Câu hỏi "huấn luyện" thành tập <code>{train, training, trained}</code> (3 từ), nên nếu text chỉ có "training" thì điểm chỉ 1/3 = 0.33, trong khi hỏi thẳng "training" được 1.0.</li>
+    <li><strong>Benchmark chưa chứng minh được "độ chính xác cao".</strong> Bộ eval chỉ có 5 câu hỏi trên 3 PDF tổng hợp, mỗi tài liệu gắn một token hiếm rời rạc ("Meowtron", "Barkformer", "Photron"). Truy hồi từ khoá dễ dàng đạt 100% trên bộ này. Ngưỡng đặt <code>min_precision = 0.8</code> với n=5 nghĩa là chỉ cần đúng 4/5 là qua. Con số này không nói gì về hiệu năng trên tài liệu thật, đặc biệt là tiếng Việt.</li>
+    <li><strong>search_pdf chỉ đưa 1–2 chunk vào LLM.</strong> <code>RagToolRunner.run()</code> gọi <code>confident_sources()</code> ngay trong tầng truy hồi, nên câu hỏi dạng "liệt kê các bước" hoặc "những điểm cần lưu ý" sẽ bị thiếu ý vì context quá hẹp. Chỉ <code>summarize_pdf</code> và <code>compare_pdfs</code> mới dùng full pool.</li>
+  </ul>
+
+  <h3>2. Hiệu năng khi dữ liệu lớn lên</h3>
+  <ul>
+    <li><strong>Quét tuyến tính, không có inverted index.</strong> Mỗi truy vấn lặp qua toàn bộ chunk trong RAM và chạy <code>tokenize()</code> (regex) trên từng chunk. Không cache token. Với một cuốn sách 700 trang (~700–1000 chunk) đã thấy rõ độ trễ; với 20 PDF cùng cỡ thì mỗi truy vấn là hàng chục nghìn lần regex.</li>
+    <li><strong>Nhân chi phí theo số tài liệu.</strong> <code>search_many()</code> gọi <code>search()</code> một lần cho mỗi tài liệu. Mà trong <code>search()</code>, với mỗi nguồn top còn gọi <code>sources_near_page()</code> và <code>context_start_page()</code> — cả hai lại quét toàn bộ chunk một lần nữa. Tổng độ phức tạp là O(số_tài_liệu × số_chunk).</li>
+    <li><strong>Test độ trễ không đại diện.</strong> <code>test_latency_budget</code> chỉ chạy trên 3 tài liệu tổng hợp 2 trang và ngưỡng cho phép tới 1000ms. Không phát hiện được vấn đề thật.</li>
+    <li><strong>Ghi lại toàn bộ file JSON mỗi lần upload.</strong> <code>_save()</code> serialize lại tất cả chunk và ghi đè. Upload file thứ 20 phải ghi lại toàn bộ dữ liệu của 19 file trước.</li>
+    <li><strong>Toàn bộ chunk nằm trong RAM.</strong> Không có giới hạn, không có eviction. Đây là điểm chặn cứng đối với "chạy trên máy yếu".</li>
+  </ul>
+
+  <h3>3. Đa tài liệu — backend có, UI không dùng</h3>
+  <ul>
+    <li><strong>UI chỉ upload được 1 file.</strong> Thẻ input ở <code>frontend/src/main.jsx</code> không có thuộc tính <code>multiple</code>, và hàm <code>uploadPdf()</code> chỉ lấy <code>files[0]</code>. Endpoint <code>/api/documents/batch</code> hoàn toàn không được gọi từ giao diện.</li>
+    <li><strong>UI không chọn được nhiều tài liệu.</strong> Request chat chỉ gửi <code>document_id</code> (một giá trị), không bao giờ gửi <code>document_ids</code>. Nghĩa là toàn bộ tính năng fan-out, quota công bằng và <code>compare_pdfs</code> hiện không thể kích hoạt từ giao diện.</li>
+    <li><strong>top_k cắt mất tài liệu.</strong> Như sơ đồ trên: quá 6 tài liệu thì phần dư bị loại khỏi context mà không có cảnh báo nào cho người dùng.</li>
+    <li><strong>Nạp tuần tự, không song song, không tiến trình.</strong> Vòng lặp trong <code>upload_documents_batch()</code> xử lý lần lượt từng file. 20 file lớn có thể vượt <code>maxDuration = 60s</code> trên Vercel và hỏng cả batch. Người dùng chỉ thấy spinner, không biết đang tới file nào.</li>
+    <li><strong>Không giới hạn dung lượng file.</strong> Chỉ chặn số lượng (20), không chặn kích thước. Một PDF 200MB sẽ được ghi thẳng vào đĩa và nạp vào RAM.</li>
+  </ul>
+
+  <h3>4. Vận hành và triển khai</h3>
+  <ul>
+    <li><strong>Trên Vercel, dữ liệu không bền.</strong> Khi có biến môi trường Vercel, storage trỏ vào <code>tempfile.gettempdir()</code>. Mỗi cold start là mất sạch tài liệu; nhiều instance song song thì mỗi instance một kho riêng. <code>_save()</code> còn nuốt lỗi <code>OSError</code> trong im lặng, nên tình trạng "chạy được nhưng không lưu" rất khó phát hiện.</li>
+    <li><strong>PDF scan thất bại mặc định.</strong> <code>enable_gemini_vision_fallback = False</code> và <code>render.yaml</code> cũng đặt <code>false</code>. PDF scan không có text layer sẽ trả lỗi 422 kèm hướng dẫn bật vision — nhưng người dùng cuối chỉ thấy upload thất bại.</li>
+    <li><strong>Không có xác thực.</strong> Mọi endpoint đều mở. <code>GET /api/documents/{id}/file</code> trả file PDF theo id mà không kiểm tra quyền — ai đoán hoặc lấy được id là tải được tài liệu. Chấp nhận được khi chạy local, không chấp nhận được khi public.</li>
+    <li><strong>Cấu hình và tài liệu lệch với code.</strong> README vẫn ghi "Sentence Transformers" và "ChromaDB" là thành phần chính, trong khi <code>vector_store.py</code> đã thay bằng kho lexical thuần. Các tham số <code>embedding_model</code>, <code>rerank_model</code>, <code>rerank_candidates</code> còn trong config nhưng bị bỏ qua hoàn toàn. Thư mục <code>storage/chroma/</code> còn sót file <code>.bin</code> từ phiên bản cũ.</li>
+    <li><strong>Không gửi lịch sử hội thoại vào LLM.</strong> <code>finalize_with_sources()</code> chỉ dựng messages từ câu hỏi hiện tại và payload tool. Lịch sử được lưu SQLite nhưng chỉ để hiển thị. Câu hỏi nối tiếp kiểu "còn cái kia thì sao?" sẽ mất ngữ cảnh hoàn toàn.</li>
+  </ul>
+
+  <h3>5. Chất lượng mã</h3>
+  <ul>
+    <li>Middleware <code>add_cors_headers</code> ở <code>main.py</code> không làm gì ngoài <code>call_next</code> — code chết.</li>
+    <li><code>dedupe_compare_sources()</code> có chữ ký uốn éo <code>(question: str, sources: list = None, *args)</code> để tự đoán tham số nào là câu hỏi, trong khi annotation ghi <code>question: str</code> nhưng tham số đầu thực tế nhận vào là list. Chạy được nhưng rất dễ vỡ khi refactor.</li>
+    <li><code>identifier_terms</code> bị gán hai lần trong <code>search()</code>; <code>import math</code> đặt trong thân hàm.</li>
+    <li><code>SourceList</code> ở UI chỉ hiển thị <code>sources.slice(0, 3)</code> — cắt cứng ở 3, trong khi backend có thể trả tới 4 nguồn cho <code>compare_pdfs</code>.</li>
+  </ul>
+
+  <h2>Đối chiếu với 5 yêu cầu của bạn</h2>
+  <table>
+    <thead>
+      <tr><th style="width:22%">Yêu cầu</th><th style="width:12%">Hiện trạng</th><th>Ghi chú</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Nhanh</strong></td>
+        <td class="mid">Tạm được</td>
+        <td>Nhanh trên vài file nhỏ vì bỏ được bước embedding. Nhưng quét tuyến tính O(n) mỗi truy vấn, nhân lên theo số tài liệu, không cache token — sẽ chậm rõ khi có nhiều PDF lớn.</td>
+      </tr>
+      <tr>
+        <td><strong>Nhẹ, máy yếu</strong></td>
+        <td class="good">Tốt</td>
+        <td>Đây là điểm mạnh nhất. Bỏ torch/onnx/Chroma là quyết định đúng và đã thực thi triệt để. Rủi ro còn lại là toàn bộ chunk nằm trong RAM không giới hạn.</td>
+      </tr>
+      <tr>
+        <td><strong>Chính xác cao</strong></td>
+        <td class="bad">Chưa đạt</td>
+        <td>Chấm điểm từ khoá không IDF là hạn chế cốt lõi. Benchmark hiện tại quá dễ để chứng minh bất cứ điều gì. Cần bộ eval thật bằng tài liệu tiếng Việt trước khi tin vào con số.</td>
+      </tr>
+      <tr>
+        <td><strong>Nhiều file cùng lúc</strong></td>
+        <td class="bad">Chưa tới người dùng</td>
+        <td>Backend đã làm đúng và khá đầy đủ. Nhưng UI không gửi nhiều file và không gửi nhiều document id, nên toàn bộ năng lực này đang nằm im. Cộng thêm điểm cắt top_k=6 làm mất tài liệu im lặng.</td>
+      </tr>
+      <tr>
+        <td><strong>Không nói linh tinh</strong></td>
+        <td class="good">Tốt</td>
+        <td>Nhiều lớp chặn, trong đó cổng "score 0 thì từ chối và không gọi LLM" là thiết kế rất tốt. Cần bật thêm lớp kiểm chứng và gửi lịch sử hội thoại để không trả lời sai ngữ cảnh.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Việc cần sửa, theo thứ tự ưu tiên</h2>
+
+  <div class="fix">
+    <h4><span class="tag p0">P0</span> Bật kiểm chứng câu trả lời</h4>
+    <p>Cổng chống bịa mạnh nhất đang tắt. Đặt <code>ENABLE_ANSWER_VERIFICATION=true</code> trong <code>backend/.env</code> và trong <code>render.yaml</code>. Đánh đổi: thêm một vòng gọi LLM, khoảng gấp đôi độ trễ. <span class="loc">config.py:36 · render.yaml</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p0">P0</span> Nối UI với tính năng đa tài liệu đã có</h4>
+    <p>Thêm <code>multiple</code> vào input file, cho phép chọn nhiều tài liệu trong sidebar, gửi <code>document_ids</code> trong request chat, và gọi <code>/api/documents/batch</code>. Phần backend không cần viết lại gì. <span class="loc">frontend/src/main.jsx:443, 356, 366</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p0">P0</span> Thay chấm điểm từ khoá bằng BM25</h4>
+    <p>Giữ nguyên kiến trúc nhẹ, chỉ thêm IDF và chuẩn hoá độ dài chunk vào <code>lexical_score()</code>. Đây là thay đổi nhỏ nhất mang lại cải thiện lớn nhất về độ chính xác xếp hạng. <span class="loc">vector_store.py:452–459</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p1">P1</span> Cache token của chunk</h4>
+    <p>Tính trước <code>set(tokenize(chunk_text))</code> một lần lúc nạp và lưu vào bản ghi chunk. Loại bỏ regex chạy lại trên mọi chunk ở mọi truy vấn — cải thiện tốc độ nhiều lần, không đổi kiến trúc. <span class="loc">vector_store.py:67–84, 452–459</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p1">P1</span> Xử lý điểm cắt top_k khi nhiều tài liệu</h4>
+    <p>Đặt <code>per_doc_k = max(1, top_k // n_docs)</code> và nếu <code>n_docs &gt; top_k</code> thì báo rõ trong response rằng chỉ một phần tài liệu được dùng, hoặc nâng top_k theo số tài liệu. Đừng để việc mất tài liệu diễn ra im lặng. <span class="loc">vector_store.py:210–234</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p1">P1</span> Gửi lịch sử hội thoại vào LLM</h4>
+    <p>Lấy vài lượt gần nhất từ <code>ChatHistoryStore</code> và chèn vào messages trước câu hỏi hiện tại. Không có bước này thì hội thoại nhiều lượt gần như không dùng được. <span class="loc">llm_client.py:198–215</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p1">P1</span> Giới hạn dung lượng file và nạp song song</h4>
+    <p>Chặn theo kích thước (ví dụ 50MB/file) trước khi ghi đĩa, và chạy nạp batch song song có giới hạn để không vượt <code>maxDuration</code>. <span class="loc">main.py:150–194</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p1">P1</span> Xây bộ eval thật</h4>
+    <p>20–30 câu hỏi trên tài liệu tiếng Việt thật, có câu hỏi phải trả lời "không đủ thông tin" để đo cả khả năng từ chối. Chỉ khi đó mới biết "độ chính xác cao" là thật hay là ảo giác từ benchmark tổng hợp. <span class="loc">tests/test_multi_pdf_quality.py</span></p>
+  </div>
+
+  <div class="fix">
+    <h4><span class="tag p2">P2</span> Dọn code chết và đồng bộ tài liệu</h4>
+    <p>Xoá middleware rỗng, bỏ các tham số embedding/rerank không dùng, viết lại README theo kiến trúc lexical hiện tại, xoá <code>storage/chroma/</code> còn sót, làm phẳng chữ ký <code>dedupe_compare_sources()</code>. <span class="loc">main.py:48–50, 427 · config.py:29–31 · README.md</span></p>
+  </div>
+
+</div>
+</body>
+</html>

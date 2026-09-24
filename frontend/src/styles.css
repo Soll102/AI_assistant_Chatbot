@@ -707,3 +707,133 @@ body.resizing iframe {
     display: none;
   }
 }
+
+/* --- Multi-document scope + upload feedback --------------------------- */
+
+.document-list-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.selection-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.selection-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.selection-actions button {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: var(--btn-bg);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.selection-actions button:hover {
+  background: var(--hover-bg);
+  border-color: var(--hover-border);
+}
+
+.document-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.document-row .document-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.document-check {
+  display: flex;
+  align-items: center;
+  padding-top: 12px;
+  cursor: pointer;
+}
+
+.document-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-dark);
+  cursor: pointer;
+}
+
+.document-check input:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.document-item.in-scope {
+  border-color: var(--accent-border);
+}
+
+.upload-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+}
+
+.message-warning {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.source-origin {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.index-warning {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
+.index-warning p {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.index-warning button {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--btn-bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.index-warning button:hover:not(:disabled) {
+  background: var(--hover-bg);
+  border-color: var(--hover-border);
+}
+
+.index-warning button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}

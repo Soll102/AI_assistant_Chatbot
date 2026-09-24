@@ -6,15 +6,16 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "lint": "vite build --mode development"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
+    "@vitejs/plugin-react": "^6.0.2",
     "katex": "^0.17.0",
-    "lucide-react": "latest",
-    "marked": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "vite": "latest"
+    "lucide-react": "^1.21.0",
+    "marked": "^18.0.5",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^8.0.16"
   }
 }
